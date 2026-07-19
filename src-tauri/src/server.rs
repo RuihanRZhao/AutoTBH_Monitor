@@ -1,7 +1,7 @@
 //! Embedded axum HTTP server on 127.0.0.1:5260. Mirrors the `/api/*` contract of the original
 //! Node backend. Serves the bundled Nuxt SPA as the static root (SPA fallback → 200.html).
 
-use crate::{currency, farm, meter::Meter, pricing, save, steam};
+use crate::{currency, farm, meter::Meter, pricing, save, steam, wiki};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -28,6 +28,19 @@ pub struct AppState {
     pub frontend_dir: PathBuf, // Nuxt .output/public
     pub currency: Arc<AtomicU32>,
     pub meter: Meter,          // built-in live DPS/gold/EXP + run tracker
+    pub scan: Arc<std::sync::Mutex<ScanState>>, // Deep Scan progress
+}
+
+/// Background "Deep Scan" state: probes every stash entry's order book.
+#[derive(Default)]
+pub struct ScanState {
+    pub status: String, // idle | running | done | error
+    pub total: usize,
+    pub done: usize,
+    pub items: Vec<Value>,
+    pub total_instant_cents: i64,
+    pub total_suggested_cents: i64,
+    pub error: Option<String>,
 }
 
 type Q = HashMap<String, String>;
@@ -53,6 +66,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/save-mtime", get(h_save_mtime))
         .route("/api/stash", get(h_stash))
         .route("/api/stash-tabs", get(h_stash_tabs))
+        .route("/api/stash-orders", get(h_stash_orders))
+        .route("/api/stash-scan", get(h_stash_scan))
+        .route("/api/wiki-item", get(h_wiki_item))
         .route("/api/farm-calibration", get(h_farm_calibration))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
@@ -128,8 +144,15 @@ async fn h_stash(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResp
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     match save::read_stash(&market) {
-        Ok(stash) => {
+        Ok(mut stash) => {
             let code = s.currency.load(Ordering::Relaxed);
+            // Localized names / icons / rarity colours from the wiki catalog.
+            let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+            if let Some(cat) = wiki::ensure_catalog(&s.data_dir).await {
+                if let Some(items) = stash.get_mut("items").and_then(|v| v.as_array_mut()) {
+                    wiki::enrich_items(&cat, items, lang);
+                }
+            }
             let mut out = json!({ "supported": true, "found": true, "currency": currency::info_json(code) });
             if let (Some(o), Some(st)) = (out.as_object_mut(), stash.as_object()) {
                 for (k, v) in st { o.insert(k.clone(), v.clone()); }
@@ -185,6 +208,179 @@ async fn h_insights() -> impl IntoResponse { Json(engine_pending("insights")) }
 async fn h_upgrades() -> impl IntoResponse {
     Json(json!({ "found": save::save_exists(), "enginePending": true, "slots": [] }))
 }
+// ── Sell desk: value the stash against live BUY ORDERS ──────────────────────
+/// Fetch order books for every owned sellable item and rank them.
+/// Throttled (650 ms) and 429-aware, mirroring the original's cadence.
+async fn h_stash_orders(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
+    let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+    if !save::save_exists() { return Json(json!({ "found": false })); }
+
+    let market = read_bundled(&s, "cache/items.json")
+        .and_then(|v| v.get("items").cloned())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let stash = match save::read_stash(&market) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "found": true, "error": e.to_string() })),
+    };
+    let code = s.currency.load(Ordering::Relaxed);
+    let info = currency::get(code).unwrap();
+    let cat = wiki::ensure_catalog(&s.data_dir).await;
+
+    let empty = vec![];
+    let owned = stash.get("items").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let mut items: Vec<Value> = Vec::new();
+    let (mut total_instant, mut total_suggested) = (0i64, 0i64);
+
+    for it in owned {
+        let hash = it.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let qty = it.get("qty").and_then(|v| v.as_i64()).unwrap_or(1);
+        if hash.is_empty() { continue; }
+        match steam::fetch_orderbook(appid, &hash, code).await {
+            Ok(ob) => {
+                let max_buy = ob["maxBuyCents"].as_i64().unwrap_or(0);
+                let min_sell = ob["minSellCents"].as_i64().unwrap_or(0);
+                let buy_count = ob["buyCount"].as_i64().unwrap_or(0);
+                let suggested = pricing::suggested_list_cents(min_sell, max_buy);
+                total_instant += max_buy * qty;
+                total_suggested += suggested * qty;
+                let mut row = json!({
+                    "name": it.get("name"), "hash": hash, "qty": qty,
+                    "maxBuyCents": max_buy, "minSellCents": min_sell,
+                    "buyCount": buy_count, "liquidity": ob["liquidity"],
+                    "subtotalCents": max_buy * qty,
+                    "suggestedCents": suggested,
+                    "suggestedSubtotalCents": suggested * qty,
+                    "netAfterFeeCents": pricing::net_after_fee_cents(suggested),
+                    "spreadPct": pricing::spread_pct_of(min_sell, max_buy),
+                });
+                if let Some(c) = &cat {
+                    let mut one = vec![row.clone()];
+                    wiki::enrich_items(c, &mut one, lang);
+                    row = one.remove(0);
+                }
+                items.push(row);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                items.push(json!({ "name": it.get("name"), "hash": hash, "qty": qty, "error": msg }));
+                if e.to_string().contains("429") { break; } // rate limited — stop early
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(650)).await;
+    }
+
+    // most liquid first, then richest buy order
+    items.sort_by(|a, b| {
+        let ka = (a["buyCount"].as_i64().unwrap_or(-1), a["maxBuyCents"].as_i64().unwrap_or(0));
+        let kb = (b["buyCount"].as_i64().unwrap_or(-1), b["maxBuyCents"].as_i64().unwrap_or(0));
+        kb.cmp(&ka)
+    });
+
+    Json(json!({
+        "found": true, "currency": code, "symbol": info.symbol,
+        "totalInstantCents": total_instant, "totalSuggestedCents": total_suggested,
+        "count": items.len(), "items": items,
+    }))
+}
+
+/// Deep Scan: background probe of every stash entry's order book.
+async fn h_stash_scan(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let action = q.get("action").map(|s| s.as_str()).unwrap_or("status");
+    if !save::save_exists() { return Json(json!({ "found": false })); }
+    let code = s.currency.load(Ordering::Relaxed);
+    let info = currency::get(code).unwrap();
+
+    if action == "start" {
+        {
+            let mut st = s.scan.lock().unwrap();
+            if st.status == "running" {
+                return Json(json!({ "found": true, "status": "running", "total": st.total, "done": st.done }));
+            }
+            *st = ScanState { status: "running".into(), ..Default::default() };
+        }
+        let s2 = s.clone();
+        tokio::spawn(async move { run_stash_scan(s2, code).await });
+        return Json(json!({ "found": true, "status": "running", "total": 0, "done": 0 }));
+    }
+
+    let st = s.scan.lock().unwrap();
+    let mut out = json!({
+        "found": true, "status": st.status, "total": st.total, "done": st.done,
+        "currency": code, "symbol": info.symbol,
+        "totalInstantCents": st.total_instant_cents,
+        "totalSuggestedCents": st.total_suggested_cents,
+        "error": st.error,
+    });
+    if st.status != "running" {
+        out["items"] = json!(st.items);
+    }
+    Json(out)
+}
+
+async fn run_stash_scan(s: AppState, code: u32) {
+    let market = read_bundled(&s, "cache/items.json")
+        .and_then(|v| v.get("items").cloned())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    let stash = match save::read_stash(&market) {
+        Ok(v) => v,
+        Err(e) => {
+            let mut st = s.scan.lock().unwrap();
+            st.status = "error".into();
+            st.error = Some(e.to_string());
+            return;
+        }
+    };
+    // allEntries covers items the market cache never matched (materials with buy orders only)
+    let entries: Vec<Value> = stash
+        .get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    s.scan.lock().unwrap().total = entries.len();
+
+    let (mut instant, mut suggested_total) = (0i64, 0i64);
+    let mut out: Vec<Value> = Vec::new();
+    for e in entries {
+        let hash = e.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let qty = e.get("qty").and_then(|v| v.as_i64()).unwrap_or(1);
+        if !hash.is_empty() {
+            if let Ok(ob) = steam::fetch_orderbook(save::TBH_APPID, &hash, code).await {
+                let max_buy = ob["maxBuyCents"].as_i64().unwrap_or(0);
+                let min_sell = ob["minSellCents"].as_i64().unwrap_or(0);
+                let sug = pricing::suggested_list_cents(min_sell, max_buy);
+                instant += max_buy * qty;
+                suggested_total += sug * qty;
+                out.push(json!({
+                    "name": e.get("name"), "hash": hash, "qty": qty, "kind": e.get("kind"),
+                    "matched": true, "maxBuyCents": max_buy, "minSellCents": min_sell,
+                    "buyCount": ob["buyCount"], "liquidity": ob["liquidity"],
+                    "subtotalCents": max_buy * qty, "suggestedCents": sug,
+                }));
+            }
+        }
+        // Scope the guard: a std MutexGuard held across an await makes the future non-Send.
+        {
+            let mut st = s.scan.lock().unwrap();
+            st.done += 1;
+            st.total_instant_cents = instant;
+            st.total_suggested_cents = suggested_total;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    }
+    let mut st = s.scan.lock().unwrap();
+    st.items = out;
+    st.status = "done".into();
+}
+
+async fn h_wiki_item(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let hash = match q.get("hash") { Some(h) => h, None => return Json(json!({ "ok": false })) };
+    let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+    match wiki::ensure_catalog(&s.data_dir).await {
+        Some(c) => Json(json!({ "ok": true, "hash": hash, "wiki": c.enrich_hash(hash, lang) })),
+        None => Json(json!({ "ok": false, "hash": hash })),
+    }
+}
+
 // ── Built-in live meter (absorbed from mad-labs-org/tbh-meter, MIT) ─────────
 async fn h_meter(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.meter.live_json())
@@ -204,9 +400,15 @@ async fn h_items(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResp
     let code = s.currency.load(Ordering::Relaxed);
     match steam::fetch_all_items(appid, code).await {
         Ok(mut v) => {
-            // best-effort cache for /api/stash cross-reference
+            // best-effort cache for /api/stash cross-reference (pre-enrichment)
             let _ = std::fs::create_dir_all(s.data_dir.join("cache"));
             let _ = std::fs::write(s.data_dir.join("cache/items.json"), v.to_string());
+            let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+            if let Some(cat) = wiki::ensure_catalog(&s.data_dir).await {
+                if let Some(items) = v.get_mut("items").and_then(|x| x.as_array_mut()) {
+                    wiki::enrich_items(&cat, items, lang);
+                }
+            }
             if let Some(o) = v.as_object_mut() { o.insert("stale".into(), json!(false)); }
             Json(v)
         }

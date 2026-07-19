@@ -10,6 +10,7 @@ mod pricing;
 mod save;
 mod server;
 mod steam;
+mod wiki;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
@@ -46,6 +47,7 @@ pub fn run() {
         .setup(|app| {
             let (data_dir, frontend_dir) = resolve_dirs(app);
             save::set_data_dir(data_dir.clone());
+            steam::set_data_dir(data_dir.clone());
 
             let initial_currency: u32 = std::env::var("TSM_CURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
@@ -61,6 +63,7 @@ pub fn run() {
                 frontend_dir,
                 currency: Arc::new(AtomicU32::new(initial_currency)),
                 meter,
+                scan: Arc::new(std::sync::Mutex::new(Default::default())),
             };
 
             // Bind the listener first (so the window can load immediately), then serve in the background.

@@ -54,11 +54,18 @@ async fn get_json(url: &str, referer: Option<&str>) -> anyhow::Result<Value> {
     Ok(serde_json::from_str(&txt)?)
 }
 
-/// Full market item list via search/render (USD). Simplified single-pass fetch.
+/// Full market item list via search/render.
+///
+/// NOTE: search/render **ignores** the currency parameter and always answers in USD, where
+/// `sell_price` is USD minor units (cents). Our internal convention is always main-unit x 100,
+/// so converting to the display currency is a single multiply by the USD->local rate —
+/// independent of that currency's decimal count. Scaling by the *display* currency's decimals
+/// (as an earlier revision did) silently produced wrong prices for every non-USD user.
 pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<Value> {
     let info = currency::get(currency_code).unwrap_or(currency::Currency {
         iso: "USD", symbol: "$", decimals: 2, name: "US Dollar", country: "US",
     });
+    let rate = if info.iso == "USD" { 1.0 } else { usd_to_local(info.iso).await };
     let mut items: Vec<Value> = Vec::new();
     let mut start = 0i64;
     for _page in 0..40 {
@@ -79,7 +86,8 @@ pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<V
                 .map(|u| format!("https://community.fastly.steamstatic.com/economy/image/{u}/96fx96f"))
                 .unwrap_or_default();
             let ty = r.get("asset_description").and_then(|a| a.get("type")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let price_cents = currency::sell_price_to_cents(sell_price, info.decimals as i32);
+            // sell_price is USD cents (already main x 100); convert straight to the display currency.
+            let price_cents = ((sell_price * rate).round() as i64).max(1);
             items.push(json!({
                 "name": name, "hash": name, "priceCents": price_cents,
                 "priceText": Value::Null, "listings": listings, "type": ty, "color": "", "icon": icon,
@@ -100,22 +108,100 @@ pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<V
     }))
 }
 
+// ── item_nameid resolution ──────────────────────────────────────────────────
+// Steam's order book is only addressable by `item_nameid`, which is embedded in the listing
+// page as `Market_LoadOrderSpread(<id>)`. The mapping never changes for an item, so it is
+// cached in memory and persisted to disk.
+static NAMEID_CACHE: Lazy<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static DATA_DIR: once_cell::sync::OnceCell<std::path::PathBuf> = once_cell::sync::OnceCell::new();
+
+pub fn set_data_dir(p: std::path::PathBuf) {
+    let _ = DATA_DIR.set(p);
+    // warm the persisted cache
+    if let Some(dir) = DATA_DIR.get() {
+        if let Ok(txt) = std::fs::read_to_string(dir.join("cache/nameid-cache.json")) {
+            if let Ok(m) = serde_json::from_str::<std::collections::HashMap<String, i64>>(&txt) {
+                *NAMEID_CACHE.lock().unwrap() = m;
+            }
+        }
+    }
+}
+
+fn persist_nameids() {
+    if let Some(dir) = DATA_DIR.get() {
+        let _ = std::fs::create_dir_all(dir.join("cache"));
+        let map = NAMEID_CACHE.lock().unwrap().clone();
+        if let Ok(s) = serde_json::to_string(&map) {
+            let _ = std::fs::write(dir.join("cache/nameid-cache.json"), s);
+        }
+    }
+}
+
+pub async fn item_name_id(appid: i64, hash: &str) -> anyhow::Result<i64> {
+    let key = format!("{appid}|{hash}");
+    if let Some(v) = NAMEID_CACHE.lock().unwrap().get(&key) { return Ok(*v); }
+    let url = format!("{STEAM_ORIGIN}/market/listings/{appid}/{}", enc(hash));
+    let html = get_text(&url, None).await?;
+    let id = pricing::parse_name_id(&html)
+        .ok_or_else(|| anyhow::anyhow!("item_nameid not found for {hash}"))?;
+    NAMEID_CACHE.lock().unwrap().insert(key, id);
+    persist_nameids();
+    Ok(id)
+}
+
 /// Order book for one hash.
+///
+/// Uses the market's compact order-book endpoint, which works anonymously and needs no
+/// `item_nameid`. The payload nests everything under `data`:
+///   { success, data: { amtMaxBuyOrder, amtMinSellOrder, eCurrency, cBuyOrders, cSellOrders,
+///                      rgCompactBuyOrders: [price, qty, ...], rgCompactSellOrders: [...] } }
+/// Amounts are minor units of `eCurrency`; rescale into our main-unit x 100 convention.
 pub async fn fetch_orderbook(appid: i64, hash: &str, currency_code: u32) -> anyhow::Result<Value> {
-    let qp = enc(&format!("[{appid},\"{hash}\"]"));
+    let qp = enc(&serde_json::to_string(&json!([appid, hash]))?);
     let url = format!("{STEAM_ORIGIN}/market/orderbook?q=Load&qp={qp}&currency={currency_code}");
     let referer = format!("{STEAM_ORIGIN}/market/listings/{appid}/{}", enc(hash));
     let j = get_json(&url, Some(&referer)).await?;
-    let max_buy = j.get("highest_buy_order").and_then(parse_cents).unwrap_or(0);
-    let min_sell = j.get("lowest_sell_order").and_then(parse_cents).unwrap_or(0);
-    let buy_count = j.get("buy_order_count").and_then(parse_int).unwrap_or(0);
-    let sell_count = j.get("sell_order_count").and_then(parse_int).unwrap_or(0);
-    let info = currency::get(currency_code).unwrap();
+    let d = j.get("data").unwrap_or(&Value::Null);
+
+    // Trust the currency Steam actually answered in, not the one we asked for.
+    let eff_code = d.get("eCurrency").and_then(|v| v.as_u64()).unwrap_or(currency_code as u64) as u32;
+    let info = currency::get(eff_code).unwrap_or(currency::Currency {
+        iso: "USD", symbol: "$", decimals: 2, name: "US Dollar", country: "US",
+    });
+    let to_cents = |v: Option<i64>| -> i64 {
+        v.map(|n| currency::sell_price_to_cents(n as f64, info.decimals as i32)).unwrap_or(0)
+    };
+    let max_buy = to_cents(d.get("amtMaxBuyOrder").and_then(parse_cents));
+    let min_sell = to_cents(d.get("amtMinSellOrder").and_then(parse_cents));
+    let buy_count = d.get("cBuyOrders").and_then(parse_int).unwrap_or(0);
+    let sell_count = d.get("cSellOrders").and_then(parse_int).unwrap_or(0);
+
+    // Flat [price, qty, price, qty, ...] depth arrays.
+    let depth = |k: &str| -> Vec<Value> {
+        d.get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.chunks(2)
+                    .filter(|c| c.len() == 2)
+                    .map(|c| {
+                        json!({
+                            "priceCents": to_cents(c[0].as_i64()),
+                            "qty": c[1].as_i64().unwrap_or(0),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
     Ok(json!({
         "hash": hash, "maxBuyCents": max_buy, "minSellCents": min_sell,
         "buyCount": buy_count, "sellCount": sell_count,
-        "currency": currency_code, "symbol": info.symbol,
+        "currency": eff_code, "symbol": info.symbol,
         "liquidity": pricing::classify_liquidity(buy_count),
+        "buyDepth": depth("rgCompactBuyOrders"),
+        "sellDepth": depth("rgCompactSellOrders"),
     }))
 }
 

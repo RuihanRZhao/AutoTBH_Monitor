@@ -8,57 +8,290 @@
     "gold_key": 100001
   },
   "il2cpp": {
-    "Obj":       { "KLASS": 0 },
-    "String":    { "LENGTH": 16, "CHARS": 20 },
-    "Array":     { "MAX_LENGTH": 24, "DATA": 32 },
-    "List":      { "ITEMS": 16, "SIZE": 24 },
-    "Dict":      { "ENTRIES": 24, "COUNT": 32, "DATA": 32 },
-    "DictFloat": { "STRIDE": 16, "HASH": 0, "NEXT": 4, "KEY": 8, "VALUE": 12 },
-    "Dict8B":    { "STRIDE": 24, "HASH": 0, "NEXT": 4, "KEY": 8, "VALUE": 16 },
-    "Class":     { "NAME": 16, "ELEMENT_CLASS": 64, "CAST_CLASS": 72, "PARENT": 88, "STATIC_FIELDS": 184 },
-    "Singleton": { "INSTANCE": 0 },
+    "Obj": {
+      "KLASS": 0
+    },
+    "String": {
+      "LENGTH": 16,
+      "CHARS": 20
+    },
+    "Array": {
+      "MAX_LENGTH": 24,
+      "DATA": 32
+    },
+    "List": {
+      "ITEMS": 16,
+      "SIZE": 24
+    },
+    "Dict": {
+      "ENTRIES": 24,
+      "COUNT": 32,
+      "DATA": 32
+    },
+    "DictFloat": {
+      "STRIDE": 16,
+      "HASH": 0,
+      "NEXT": 4,
+      "KEY": 8,
+      "VALUE": 12
+    },
+    "Dict8B": {
+      "STRIDE": 24,
+      "HASH": 0,
+      "NEXT": 4,
+      "KEY": 8,
+      "VALUE": 16
+    },
+    "Class": {
+      "NAME": 16,
+      "ELEMENT_CLASS": 64,
+      "CAST_CLASS": 72,
+      "PARENT": 88,
+      "STATIC_FIELDS": 184
+    },
+    "Singleton": {
+      "INSTANCE": 0
+    },
     "ACTK_FAKE": 12
   },
   "game": {
-    "Unit":                { "HEALTH_CONTROLLER": 176, "IS_HERO": 256, "CACHE": 944, "CORE_STATS_OBSCURED": 260 },
-    "UnitHealthController":{ "HP_CURRENT": 64, "HP_MAX": 76 },
-    "Monster":             { "STAGE_KEY": 988, "CACHE_OBSCURED": 960 },
-    "StageManager":        { "HERO_LIST": 48 },
-    "MonsterSpawnManager": { "MONSTER_LIST": 40, "DEAD_MONSTER_LIST": 48, "SUMMONED_LIST": 56 },
-    "LogManager":          { "LOG_LIST": 32, "LOG_BY_TYPE": 40 },
-    "StageClearLog":       { "ACT": 64, "STAGE": 68, "CLEAR_TIME": 72, "IS_BOSS": 76 },
-    "StageFailedLog":      { "ACT": 64, "STAGE": 68, "NOW_WAVE": 72, "TOTAL_WAVE": 76, "IS_ACT_BOSS": 80 },
-    "GetBoxLog":           { "BOX_KEY": 64, "MONSTER_KEY": 72, "MONSTER_TYPE": 80 },
-    "HeroDieLog":          { "KILLER_MONSTER": 64, "VICTIM_HERO": 72 },
-    "ResurrectionLog":     { "HERO": 64 },
-    "CommonSaveData":      { "PLAYTIME": 32, "CURRENT_STAGE_KEY": 88, "CURRENT_STAGE_WAVE": 92 },
-    "PlayerSaveData":      { "CURRENCIES": 88, "HEROES": 96, "ATTRIBUTES": 112, "RUNES": 128, "INVENTORY_SLOTS": 136, "STASH": 144, "ITEMS": 176, "AGGREGATES": 184 },
-    "RuneSaveData":        { "KEY": 16, "LEVEL": 20 },
-    "InventorySaveData":   { "UNIQUE_ID": 24 },
-    "StashSaveData":       { "UNIQUE_ID": 24 },
-    "AttributeSaveData":   { "KEY": 16, "LEVEL": 20 },
-    "CurrencySaveData":    { "KEY": 16, "QUANTITY": 24 },
-    "AggregateSaveData":   { "TYPE": 16, "SUB_KEY": 20, "VALUE": 24 },
-    "HeroSaveData":        { "HERO_KEY": 16, "LEVEL": 20, "EXP": 32, "EQUIPPED_ITEMS": 48, "EQUIPPED_SKILLS": 56 },
-    "ItemSaveData":        { "ITEM_KEY": 16, "UNIQUE_ID": 24, "ENCHANT_DATA": 48 },
-    "ItemEnchant":         { "STRIDE": 28, "TIER": 4, "VALUE": 8, "RECIPE": 12, "STAT_TYPE": 24 },
-    "ItemInfoData":        { "ITEM_KEY": 48, "ITEM_TYPE": 52, "GRADE": 56, "PARTS": 60, "LEVEL": 108 },
-    "HeroInfoData":        { "HERO_KEY": 48, "CLASS_TYPE": 72 },
-    "StageInfoData":       { "STAGE_KEY": 48, "STAGE_TYPE": 64, "DIFFICULTY": 68, "ACT": 72, "STAGE_NO": 76, "WAVE_AMOUNT": 84, "WAVE_MOB_AMOUNT": 88 },
-    "HeroRuntime":         { "INFO": 48, "STATS_HOLDER": 16, "LEVEL_HIDDEN": 208, "LEVEL_KEY": 212, "LEVEL_FAKE": 216, "EXP_HIDDEN": 280, "EXP_KEY": 288, "EXP_FAKE": 296 },
-    "StatsHolder":         { "MODIFIER_MGR": 16, "FINAL_STATS": 24, "SECOND": 32 },
-    "AggregateManager":    { "AGGREGATES": 32 },
-    "StatModifier":        { "STAT_TYPE": 16, "MOD_TYPE": 20, "VALUE": 24, "MOD_SOURCE": 28 },
-    "DamageInfo":          { "ATTACKER": 0, "ORIGIN_DAMAGE": 8, "IS_CRITICAL": 12, "DAMAGE_ATTRIBUTE": 16, "DAMAGE_TYPE": 20, "HIT_EFFECTS": 32 }
+    "Unit": {
+      "HEALTH_CONTROLLER": 176,
+      "IS_HERO": 256,
+      "CACHE": 944,
+      "CORE_STATS_OBSCURED": 260
+    },
+    "UnitHealthController": {
+      "HP_CURRENT": 64,
+      "HP_MAX": 76
+    },
+    "Monster": {
+      "STAGE_KEY": 988,
+      "CACHE_OBSCURED": 960
+    },
+    "StageManager": {
+      "HERO_LIST": 48
+    },
+    "MonsterSpawnManager": {
+      "MONSTER_LIST": 40,
+      "DEAD_MONSTER_LIST": 48,
+      "SUMMONED_LIST": 56
+    },
+    "LogManager": {
+      "LOG_LIST": 32,
+      "LOG_BY_TYPE": 40
+    },
+    "StageClearLog": {
+      "ACT": 64,
+      "STAGE": 68,
+      "CLEAR_TIME": 72,
+      "IS_BOSS": 76
+    },
+    "StageFailedLog": {
+      "ACT": 64,
+      "STAGE": 68,
+      "NOW_WAVE": 72,
+      "TOTAL_WAVE": 76,
+      "IS_ACT_BOSS": 80
+    },
+    "GetBoxLog": {
+      "BOX_KEY": 64,
+      "MONSTER_KEY": 72,
+      "MONSTER_TYPE": 80
+    },
+    "HeroDieLog": {
+      "KILLER_MONSTER": 64,
+      "VICTIM_HERO": 72
+    },
+    "ResurrectionLog": {
+      "HERO": 64
+    },
+    "CommonSaveData": {
+      "PLAYTIME": 32,
+      "CURRENT_STAGE_KEY": 88,
+      "CURRENT_STAGE_WAVE": 92
+    },
+    "PlayerSaveData": {
+      "CURRENCIES": 88,
+      "HEROES": 96,
+      "ATTRIBUTES": 112,
+      "RUNES": 128,
+      "INVENTORY_SLOTS": 136,
+      "STASH": 144,
+      "ITEMS": 176,
+      "AGGREGATES": 184
+    },
+    "RuneSaveData": {
+      "KEY": 16,
+      "LEVEL": 20
+    },
+    "InventorySaveData": {
+      "UNIQUE_ID": 24
+    },
+    "StashSaveData": {
+      "UNIQUE_ID": 24
+    },
+    "AttributeSaveData": {
+      "KEY": 16,
+      "LEVEL": 20
+    },
+    "CurrencySaveData": {
+      "KEY": 16,
+      "QUANTITY": 24
+    },
+    "AggregateSaveData": {
+      "TYPE": 16,
+      "SUB_KEY": 20,
+      "VALUE": 24
+    },
+    "HeroSaveData": {
+      "HERO_KEY": 16,
+      "LEVEL": 20,
+      "EXP": 32,
+      "EQUIPPED_ITEMS": 48,
+      "EQUIPPED_SKILLS": 56
+    },
+    "ItemSaveData": {
+      "ITEM_KEY": 16,
+      "UNIQUE_ID": 24,
+      "ENCHANT_DATA": 48
+    },
+    "ItemEnchant": {
+      "STRIDE": 28,
+      "TIER": 4,
+      "VALUE": 8,
+      "RECIPE": 12,
+      "STAT_TYPE": 24
+    },
+    "ItemInfoData": {
+      "ITEM_KEY": 48,
+      "ITEM_TYPE": 52,
+      "GRADE": 56,
+      "PARTS": 60,
+      "LEVEL": 108
+    },
+    "HeroInfoData": {
+      "HERO_KEY": 48,
+      "CLASS_TYPE": 72
+    },
+    "StageInfoData": {
+      "STAGE_KEY": 48,
+      "STAGE_TYPE": 64,
+      "DIFFICULTY": 68,
+      "ACT": 72,
+      "STAGE_NO": 76,
+      "WAVE_AMOUNT": 84,
+      "WAVE_MOB_AMOUNT": 88
+    },
+    "HeroRuntime": {
+      "INFO": 48,
+      "STATS_HOLDER": 16,
+      "LEVEL_HIDDEN": 208,
+      "LEVEL_KEY": 212,
+      "LEVEL_FAKE": 216,
+      "EXP_HIDDEN": 280,
+      "EXP_KEY": 288,
+      "EXP_FAKE": 296
+    },
+    "StatsHolder": {
+      "MODIFIER_MGR": 16,
+      "FINAL_STATS": 24,
+      "SECOND": 32
+    },
+    "AggregateManager": {
+      "AGGREGATES": 32
+    },
+    "StatModifier": {
+      "STAT_TYPE": 16,
+      "MOD_TYPE": 20,
+      "VALUE": 24,
+      "MOD_SOURCE": 28
+    },
+    "DamageInfo": {
+      "ATTACKER": 0,
+      "ORIGIN_DAMAGE": 8,
+      "IS_CRITICAL": 12,
+      "DAMAGE_ATTRIBUTE": 16,
+      "DAMAGE_TYPE": 20,
+      "HIT_EFFECTS": 32
+    }
   },
   "enums": {
-    "EAggregateType": { "MonsterKill": 0, "HeroDeath": 1, "GoldEarn": 2, "BoxObtain": 3, "ItemObtain": 4, "Synthesis": 5, "Alchemy": 6, "Crafting": 7, "Offering": 8, "Extraction": 9, "Decoration": 10, "Engraving": 11, "Inscription": 12, "StageClear": 13, "StageFail": 14, "PlayTime": 15, "BoxOpen": 16 },
-    "ELogType": { "NONE": 0, "StageClear": 1, "GetItemWithBoxOpen": 2, "GetBox": 3, "HeroDie": 4, "HeroResurrection": 5, "HeroLevelUp": 6, "StageFailed": 7 },
-    "EMonsterLogType": { "Monster": 0, "Boss": 1, "ActBoss": 2 },
-    "EStageDifficulty": { "Normal": 0, "Nightmare": 1, "Hell": 2, "Torment": 3 },
-    "EGradeType": { "COMMON": 0, "UNCOMMON": 1, "RARE": 2, "LEGENDARY": 3, "IMMORTAL": 4, "ARCANA": 5, "BEYOND": 6, "CELESTIAL": 7, "DIVINE": 8, "COSMIC": 9, "NONE": 10 },
-    "EItemParts": { "NONE": 0, "MAIN_WEAPON": 1, "SUB_WEAPON": 2, "HELMET": 3, "ARMOR": 4, "GLOVES": 5, "BOOTS": 6, "AMULET": 7, "EARING": 8, "RING": 9, "BRACER": 10 },
-    "EEquipClassType": { "All": 0, "Knight": 1, "Ranger": 2, "Sorcerer": 3, "Priest": 4, "Hunter": 5, "Slayer": 6 }
+    "EAggregateType": {
+      "MonsterKill": 0,
+      "HeroDeath": 1,
+      "GoldEarn": 2,
+      "BoxObtain": 3,
+      "ItemObtain": 4,
+      "Synthesis": 5,
+      "Alchemy": 6,
+      "Crafting": 7,
+      "Offering": 8,
+      "Extraction": 9,
+      "Decoration": 10,
+      "Engraving": 11,
+      "Inscription": 12,
+      "StageClear": 13,
+      "StageFail": 14,
+      "PlayTime": 15,
+      "BoxOpen": 16
+    },
+    "ELogType": {
+      "NONE": 0,
+      "StageClear": 1,
+      "GetItemWithBoxOpen": 2,
+      "GetBox": 3,
+      "HeroDie": 4,
+      "HeroResurrection": 5,
+      "HeroLevelUp": 6,
+      "StageFailed": 7
+    },
+    "EMonsterLogType": {
+      "Monster": 0,
+      "Boss": 1,
+      "ActBoss": 2
+    },
+    "EStageDifficulty": {
+      "Normal": 0,
+      "Nightmare": 1,
+      "Hell": 2,
+      "Torment": 3
+    },
+    "EGradeType": {
+      "COMMON": 0,
+      "UNCOMMON": 1,
+      "RARE": 2,
+      "LEGENDARY": 3,
+      "IMMORTAL": 4,
+      "ARCANA": 5,
+      "BEYOND": 6,
+      "CELESTIAL": 7,
+      "DIVINE": 8,
+      "COSMIC": 9,
+      "NONE": 10
+    },
+    "EItemParts": {
+      "NONE": 0,
+      "MAIN_WEAPON": 1,
+      "SUB_WEAPON": 2,
+      "HELMET": 3,
+      "ARMOR": 4,
+      "GLOVES": 5,
+      "BOOTS": 6,
+      "AMULET": 7,
+      "EARING": 8,
+      "RING": 9,
+      "BRACER": 10
+    },
+    "EEquipClassType": {
+      "All": 0,
+      "Knight": 1,
+      "Ranger": 2,
+      "Sorcerer": 3,
+      "Priest": 4,
+      "Hunter": 5,
+      "Slayer": 6
+    }
   },
   "gold": {
     "_comment": "SubKey 1 = combat gold (the per-run number). SubKey 0 is the rollup (combat+sale+idle+quest) — never use it, and never sum the subkeys.",
@@ -74,8 +307,15 @@
     "log_scan_cap": 300,
     "pending_close_grace_sec": 3.0,
     "stage_adopt_grace_sec": 3.0,
-    "trailing_box_tiers": [1, 2],
-    "box_key_by_tier": { "0": 910011, "1": 920001, "2": 930101 },
+    "trailing_box_tiers": [
+      1,
+      2
+    ],
+    "box_key_by_tier": {
+      "0": 910011,
+      "1": 920001,
+      "2": 930101
+    },
     "dead_process_ticks": 50
   },
   "calibration": {
@@ -101,8 +341,40 @@
         "ItemInfoData": 3391,
         "StageInfoData": 3453
       }
+    },
+    "1.00.28-0x6a571b94-0x698c000": {
+      "anchor_rva": 102049488,
+      "anchor_rva_hex": "0x61526D0",
+      "idx_aggregate_manager": 2828,
+      "indices": {
+        "StageManager": 2651,
+        "CommonSaveData": 2675,
+        "PlayerSaveData": 2679,
+        "GetBoxLog": 2988,
+        "HeroDieLog": 2989,
+        "LogManager": 2997,
+        "ResurrectionLog": 3003,
+        "StageClearLog": 3004,
+        "StageFailedLog": 3005,
+        "CurrencySaveData": 3084,
+        "HeroSaveData": 3085,
+        "MonsterSpawnManager": 3099,
+        "HeroInfoData": 3381,
+        "ItemInfoData": 3390,
+        "StageInfoData": 3452
+      }
     }
   },
-  "pe": { "LFANEW": 60, "TIMEDATESTAMP": 8, "SIZEOFIMAGE": 80 },
-  "limits": { "TABLE_BLOCK": 8192, "MAX_TABLE_ENTRIES": 40000, "MONSTER_LIST_MAX": 2000, "LOG_LIST_MAX": 100000, "STRING_MAX": 4096 }
+  "pe": {
+    "LFANEW": 60,
+    "TIMEDATESTAMP": 8,
+    "SIZEOFIMAGE": 80
+  },
+  "limits": {
+    "TABLE_BLOCK": 8192,
+    "MAX_TABLE_ENTRIES": 40000,
+    "MONSTER_LIST_MAX": 2000,
+    "LOG_LIST_MAX": 100000,
+    "STRING_MAX": 4096
+  }
 }
