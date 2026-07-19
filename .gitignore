@@ -1,0 +1,22 @@
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node / Nuxt
+node_modules/
+frontend/.output/
+frontend/.nuxt/
+frontend/.data/
+frontend/dist/
+*.log
+
+# Runtime caches (bundled *.seed.json and engine snapshots stay in git)
+data/cache/
+data/meter/
+data/*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

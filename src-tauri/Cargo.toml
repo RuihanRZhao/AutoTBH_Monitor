@@ -1,0 +1,57 @@
+[package]
+name = "autotbh-monitor"
+version = "1.22.4"
+description = "AutoTBH_Monitor — read-only TBH: Task Bar Hero companion (Rust/Tauri port)"
+authors = ["RuihanRZhao"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "autotbh_monitor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "autotbh-monitor"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-ico"] }
+tauri-plugin-shell = "2"
+
+# async runtime + web server
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "process"] }
+axum = { version = "0.7", features = ["query"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+
+# http client (rustls to avoid a system OpenSSL dependency)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# ES3 save decryption (AES-128-CBC + PBKDF2-HMAC-SHA1) and gzip
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+flate2 = "1"
+
+# misc
+once_cell = "1"
+dirs = "5"
+regex = "1"
+percent-encoding = "2"
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

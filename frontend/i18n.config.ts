@@ -1,0 +1,51 @@
+// vue-i18n runtime config. UI chrome strings for AutoTBH_Monitor.
+// Game content (item/monster/stage names) is localized server-side via the wiki catalog's
+// 16-language name maps; these strings cover the app shell / navigation / labels.
+export default defineI18nConfig(() => ({
+  legacy: false,
+  fallbackLocale: 'en',
+  messages: {
+    en: {
+      app: { title: 'AutoTBH_Monitor', subtitle: 'Read-only TBH: Task Bar Hero companion' },
+      nav: {
+        overview: 'Overview', stash: 'Sell Desk', market: 'Market', farm: 'Farm',
+        heroes: 'Heroes', runes: 'Runes', bestiary: 'Bestiary', crafting: 'Crafting',
+        updates: 'Updates', settings: 'Settings',
+      },
+      common: {
+        loading: 'Loading…', refresh: 'Refresh', retry: 'Retry', offline: 'Offline',
+        noData: 'No data', total: 'Total', quantity: 'Qty', price: 'Price', name: 'Name',
+        currency: 'Currency', language: 'Language', search: 'Search',
+        gameNotFound: 'Game save not found — install TBH and play once.',
+      },
+      overview: { bestMove: 'Best next move', stashValue: 'Stash value', items: 'Items', priced: 'Priced' },
+      market: { items: 'Market items', listings: 'listings', value: 'Value' },
+      stash: { title: 'Your stash', gear: 'Gear', materials: 'Materials', pending: 'Pending', unlisted: 'Unlisted' },
+      bestiary: { monsters: 'Monsters', stages: 'Stages', gold: 'Gold', exp: 'EXP', life: 'Life', atk: 'ATK' },
+      crafting: { recipes: 'Recipes', materials: 'Materials', tier: 'Tier' },
+      updates: { patchnotes: 'Patch notes', news: 'News' },
+      settings: { title: 'Settings', theme: 'Theme', dark: 'Dark', light: 'Light', about: 'About' },
+    },
+    'zh-Hans': {
+      app: { title: 'AutoTBH_Monitor', subtitle: '只读的 TBH: Task Bar Hero 助手' },
+      nav: {
+        overview: '总览', stash: '出售台', market: '市场', farm: '刷图',
+        heroes: '英雄', runes: '符文', bestiary: '图鉴', crafting: '合成',
+        updates: '更新', settings: '设置',
+      },
+      common: {
+        loading: '加载中…', refresh: '刷新', retry: '重试', offline: '离线',
+        noData: '暂无数据', total: '总计', quantity: '数量', price: '价格', name: '名称',
+        currency: '货币', language: '语言', search: '搜索',
+        gameNotFound: '未找到游戏存档 — 请安装 TBH 并至少游玩一次。',
+      },
+      overview: { bestMove: '下一步最佳操作', stashValue: '仓库价值', items: '物品', priced: '已定价' },
+      market: { items: '市场物品', listings: '在售', value: '价值' },
+      stash: { title: '你的仓库', gear: '装备', materials: '材料', pending: '待定价', unlisted: '无挂单' },
+      bestiary: { monsters: '怪物', stages: '关卡', gold: '金币', exp: '经验', life: '生命', atk: '攻击' },
+      crafting: { recipes: '配方', materials: '材料', tier: '阶级' },
+      updates: { patchnotes: '更新日志', news: '新闻' },
+      settings: { title: '设置', theme: '主题', dark: '深色', light: '浅色', about: '关于' },
+    },
+  },
+}))

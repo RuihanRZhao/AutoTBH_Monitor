@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AutoTBH_Monitor",
+  "version": "1.22.4",
+  "identifier": "org.ruihanrzhao.autotbh-monitor",
+  "build": {
+    "frontendDist": "../frontend/.output/public",
+    "beforeBuildCommand": "npm --prefix ../frontend run generate",
+    "beforeDevCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "../frontend/.output/public": "frontend",
+      "../data": "data"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
