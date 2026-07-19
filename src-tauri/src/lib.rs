@@ -2,6 +2,7 @@
 //! then opens the window on it (the Nuxt SPA is served by axum, same origin as /api).
 
 mod currency;
+mod engine;
 mod farm;
 mod insights;
 mod memory;
