@@ -49,6 +49,32 @@ impl Default for Params {
     }
 }
 
+/// StatType id → name (game's EStatType enum). Used to label FINAL_STATS and diff vs the original.
+pub fn stat_name(id: i64) -> &'static str {
+    match id {
+        1 => "AttackDamage", 2 => "AttackSpeed", 3 => "CriticalChance", 4 => "CriticalDamage",
+        5 => "MaxHp", 6 => "Armor", 7 => "MovementSpeed", 8 => "AreaOfEffect",
+        9 => "BaseAttackCountReduction", 10 => "CooldownReduction", 11 => "SkillRangeExpansion",
+        12 => "FireResistance", 13 => "ColdResistance", 14 => "LightningResistance",
+        15 => "ChaosResistance", 16 => "DodgeChance", 17 => "BlockChance", 18 => "MaxDodgeChance",
+        19 => "MaxBlockChance", 20 => "Multistrike", 21 => "HpLeech", 22 => "ProjectileCount",
+        23 => "HpRegenPerSec", 24 => "PhysicalDamagePercent", 25 => "FireDamagePercent",
+        26 => "ColdDamagePercent", 27 => "LightningDamagePercent", 28 => "ChaosDamagePercent",
+        29 => "MaxFireResistance", 30 => "MaxColdResistance", 31 => "MaxLightningResistance",
+        32 => "MaxChaosResistance", 33 => "AddHpPerHit", 34 => "DamageReduction",
+        35 => "PhysicalDamageReduction", 36 => "FireDamageReduction", 37 => "ColdDamageReduction",
+        38 => "LightningDamageReduction", 39 => "ChaosDamageReduction", 40 => "DamageAbsorption",
+        41 => "DamageAddition", 42 => "PhysicalDamageAddition", 43 => "FireDamageAddition",
+        44 => "ColdDamageAddition", 45 => "LightningDamageAddition", 46 => "ChaosDamageAddition",
+        47 => "IncreaseExpAmount", 48 => "AdditionalExp", 49 => "CastSpeed", 50 => "SkillHealIncrease",
+        51 => "SkillDurationIncrease", 52 => "AllElementalResistance", 53 => "IncreaseProjectileDamage",
+        54 => "IncreaseMeleeDamage", 55 => "IncreaseAreaOfEffectDamage", 56 => "IncreaseSummonDamage",
+        57 => "IncreaseProjectileSpeed", 58 => "AddHpPerKill", 59 => "AddAllSkillLevel",
+        60 => "ElementalBlockChance", 61 => "ElementalDodgeChance", 62 => "MaxElementalBlockChance",
+        63 => "MaxElementalDodgeChance", _ => "Unknown",
+    }
+}
+
 /// How a stat modifier stacks. Matches the game's MODTYPE enum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModType {
@@ -102,7 +128,7 @@ pub fn crit_multiplier(crit_chance: f64, crit_damage: f64, p: &Params) -> f64 {
     1.0 + chance * (dmg - 1.0)
 }
 
-/// Auto-attack DPS.
+/// Auto-attack DPS, in the REFERENCE engine's stat units.
 ///
 /// `AD × (AS/100) × BASIC_ATTACK_MULT × critMultiplier`
 ///
@@ -118,6 +144,52 @@ pub fn auto_dps(
         * (attack_speed / 100.0)
         * p.basic_attack_mult
         * crit_multiplier(crit_chance, crit_damage, p)
+}
+
+/// Auto-attack DPS from the GAME's own `FINAL_STATS`, which are already normalised
+/// (AS is a multiplier, crit chance/damage are fractions) — so no divisors are applied.
+///
+/// `AD × AS × BASIC_ATTACK_MULT × (1 + CC × (CD − 1))`
+///
+/// This agrees exactly with [`auto_dps`] whenever the hero has no MULTIPLICATIVE modifiers.
+/// See [`MULTIPLICATIVE_DIVISOR_NOTE`] for the case where they diverge.
+pub fn auto_dps_game(
+    attack_damage: f64,
+    attack_speed: f64,
+    crit_chance: f64,
+    crit_damage: f64,
+    p: &Params,
+) -> f64 {
+    attack_damage * attack_speed * p.basic_attack_mult * (1.0 + crit_chance * (crit_damage - 1.0))
+}
+
+/// The game and the reference engine disagree on how MULTIPLICATIVE modifiers scale.
+///
+/// Measured against a live process, with `FINAL_STATS` as the authority:
+///   game:      `stat = (ΣFLAT/100) × (1 + ΣADDITIVE/1000) × (1 + ΣMULTIPLICATIVE/1000)`
+///   reference: `stat =  ΣFLAT      × (1 + ΣADDITIVE/1000) × (1 + ΣMULTIPLICATIVE/100)`
+///
+/// With no MULTIPLICATIVE term the two agree exactly (game × 100 == reference), confirmed on
+/// two heroes across every stat. With one they diverge by ~10× on that term — e.g. a hero with
+/// AttackSpeed FLAT 140 / ADDITIVE 724 / MULTIPLICATIVE 90 reads 2.630824 in game
+/// (= 1.4 × 1.724 × 1.09) but 458.584 from the reference (= 140 × 1.724 × 1.9).
+///
+/// We treat the game as authoritative and compute from `FINAL_STATS`; matching the reference
+/// bit-for-bit here would mean reproducing an inflated number.
+pub const MULTIPLICATIVE_DIVISOR_NOTE: &str =
+    "game divides MULTIPLICATIVE by 1000; the reference engine divides by 100";
+
+/// Scale factor from a game `FINAL_STATS` value to the reference engine's display units.
+/// Only factors confirmed against live data are listed; anything else returns `None` rather
+/// than inventing a conversion.
+pub fn game_to_display_scale(stat_id: i64) -> Option<f64> {
+    Some(match stat_id {
+        1 | 5 | 6 => 1.0,                       // AttackDamage, MaxHp, Armor
+        2 | 7 | 23 => 100.0,                    // AttackSpeed, MovementSpeed, HpRegenPerSec
+        3 | 4 | 10 | 16 | 25 | 26 => 1000.0,    // CriticalChance/Damage, CDR, Dodge, Fire/ColdDamage%
+        40 => 10.0,                             // DamageAbsorption
+        _ => return None,
+    })
 }
 
 /// Effective HP for a given total mitigation fraction (0.0–1.0, capped at MITIG_CAP).
@@ -190,6 +262,31 @@ mod tests {
         // hero 201 (Ranger)
         let d = auto_dps(67.5, 458.584, 95.6, 2236.0, &p);
         assert!((d - 657.6288320911679).abs() < 1e-6, "201 autoDps = {d}");
+    }
+
+    #[test]
+    fn auto_dps_from_game_units_matches_reference_without_multiplicative() {
+        let p = Params::default();
+        // Live FINAL_STATS read from the running game (f32, hence the 1e-4 tolerance).
+        // hero 401 — no MULTIPLICATIVE on any DPS stat, so it must equal the reference exactly.
+        let d = auto_dps_game(44.94, 1.2421499490737915, 0.019999999552965164, 1.399999976158142, &p);
+        assert!((d - 106.9107176592).abs() < 1e-4, "401 autoDps(game) = {d}");
+        // hero 501 — likewise.
+        let d = auto_dps_game(62.1, 1.0106500387191772, 0.12397500872612, 2.971999406814575, &p);
+        assert!((d - 148.39984565830846).abs() < 1e-4, "501 autoDps(game) = {d}");
+    }
+
+    #[test]
+    fn multiplicative_divisor_diverges_from_reference() {
+        // hero 201 AttackSpeed: FLAT 140, ADDITIVE 724, MULTIPLICATIVE 90.
+        // Game stores 2.630824 = 1.4 × 1.724 × 1.09  (MULTIPLICATIVE / 1000)
+        let game_as: f64 = 1.4 * 1.724 * 1.09;
+        assert!((game_as - 2.630824).abs() < 1e-5, "game AS = {game_as}");
+        // Reference reports 458.584 = 140 × 1.724 × 1.9  (MULTIPLICATIVE / 100)
+        let reference_as = aggregate_stat(&c(&[140.0], &[724.0], &[90.0]));
+        assert!((reference_as - 458.584).abs() < 1e-9, "reference AS = {reference_as}");
+        // They differ by the divisor ratio on that term — this is expected, not a regression.
+        assert!(reference_as > game_as * 100.0);
     }
 
     #[test]

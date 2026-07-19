@@ -1,7 +1,7 @@
 //! Embedded axum HTTP server on 127.0.0.1:5260. Mirrors the `/api/*` contract of the original
 //! Node backend. Serves the bundled Nuxt SPA as the static root (SPA fallback → 200.html).
 
-use crate::{currency, farm, meter::Meter, pricing, save, steam, wiki};
+use crate::{currency, engine, farm, meter::Meter, pricing, save, steam, wiki};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meter", get(h_meter))
         .route("/api/meter/status", get(h_meter_status))
         .route("/api/meter/enable", post(h_meter_enable))
+        .route("/api/hero-stats", get(h_hero_stats))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -444,6 +445,61 @@ async fn h_meter(State(s): State<AppState>) -> impl IntoResponse {
 }
 async fn h_meter_status(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.meter.status())
+}
+
+/// Live per-hero FINAL_STATS + engine-derived offence numbers.
+///
+/// Stats are read from the running game (the save carries no resolved stats), labelled by
+/// StatType name, and fed through the verified engine formulas. `ehp`/`power` are only emitted
+/// once the armour→mitigation curve is fitted — until then they stay null rather than guessed.
+async fn h_hero_stats(State(s): State<AppState>) -> impl IntoResponse {
+    let p = engine::Params::default();
+    match s.meter.read_party_stats() {
+        Ok(list) => {
+            let heroes: Vec<Value> = list
+                .iter()
+                .map(|h| {
+                    let raw = h.get("stats").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                    let get = |id: i64| -> f64 {
+                        raw.get(&id.to_string()).and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    };
+                    // Two views: the game's native FINAL_STATS, and those rescaled into the
+                    // reference engine's display units (only where the factor is confirmed).
+                    let mut game_named = serde_json::Map::new();
+                    let mut display_named = serde_json::Map::new();
+                    for (k, v) in raw.iter() {
+                        let id: i64 = k.parse().unwrap_or(-1);
+                        let name = engine::stat_name(id).to_string();
+                        let val = v.as_f64().unwrap_or(0.0);
+                        game_named.insert(name.clone(), json!(val));
+                        if let Some(scale) = engine::game_to_display_scale(id) {
+                            display_named.insert(name, json!(val * scale));
+                        }
+                    }
+                    let (ad, as_, cc, cd) = (get(1), get(2), get(3), get(4));
+                    // Game units are already normalised — no divisors.
+                    let auto = engine::auto_dps_game(ad, as_, cc, cd, &p);
+                    json!({
+                        "heroKey": h.get("heroKey"),
+                        "slot": h.get("slot"),
+                        "stats": game_named,
+                        "statsDisplay": display_named,
+                        "autoDps": auto,
+                        "critMultiplier": 1.0 + cc * (cd - 1.0),
+                        "maxHp": get(5),
+                        "armor": get(6),
+                        // Null until the armour→mitigation curve is fitted — never guessed.
+                        "ehp": Value::Null,
+                        "power": Value::Null,
+                        "pending": ["skillDps", "ehp", "power"],
+                        "note": engine::MULTIPLICATIVE_DIVISOR_NOTE,
+                    })
+                })
+                .collect();
+            Json(json!({ "ok": true, "source": "memory", "heroes": heroes }))
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
 }
 async fn h_meter_enable(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let on = q.get("on").map(|v| v == "1" || v == "true").unwrap_or(true);

@@ -208,6 +208,60 @@ impl Meter {
         serde_json::from_str(&txt).map_err(|e| format!("cannot parse {}: {e}", p.display()))
     }
 
+    /// One-shot read of each fielded hero's FINAL_STATS (`Dict<StatType,float>`), the game's fully
+    /// resolved stats after gear/attributes/runes/pets. Returns `[{heroKey, slot, stats:{id:val}}]`.
+    /// Requires the game running with heroes on the field (the save has no final stats).
+    #[cfg(windows)]
+    pub fn read_party_stats(&self) -> Result<Vec<Value>, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg
+            .calibrations()
+            .into_iter()
+            .find(|(k, _)| suffix(k) == fp)
+            .map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let g = |cls: &str, f: &str| cfg.game.get(cls).and_then(|m| m.get(f)).cloned().unwrap_or(0) as usize;
+
+        let smi = calib.indices.get("StageManager").cloned().ok_or("no StageManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, smi).map_err(|e| e.to_string())?;
+        let sm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let hl = proc.read_ptr(sm + g("StageManager", "HERO_LIST")).unwrap_or(0);
+        if hl == 0 { return Ok(Vec::new()); }
+        let n = proc.read_il2cpp_array_len(hl).unwrap_or(0).clamp(0, 12);
+
+        let mut out = Vec::new();
+        for s in 0..n as usize {
+            let h = proc.read_ptr(proc.il2cpp_array_data(hl) + s * 8).unwrap_or(0);
+            if h == 0 { continue; }
+            let uf = proc.read_ptr(h + g("Unit", "CACHE")).unwrap_or(0);
+            if uf == 0 { continue; }
+            let hi = proc.read_ptr(uf + g("HeroRuntime", "INFO")).unwrap_or(0);
+            let hk = if hi != 0 { proc.read_i32(hi + g("HeroInfoData", "HERO_KEY")).unwrap_or(0) as i64 } else { 0 };
+            if hk <= 0 || hk >= 10_000_000 { continue; }
+            let sh = proc.read_ptr(uf + g("HeroRuntime", "STATS_HOLDER")).unwrap_or(0);
+            let fs = if sh != 0 { proc.read_ptr(sh + g("StatsHolder", "FINAL_STATS")).unwrap_or(0) } else { 0 };
+            let mut stats = serde_json::Map::new();
+            if fs != 0 {
+                for (id, val) in proc.dictfloat_items(fs, 200).unwrap_or_default() {
+                    stats.insert(id.to_string(), json!(val as f64));
+                }
+            }
+            out.push(json!({ "heroKey": hk, "slot": s, "stats": stats }));
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(windows))]
+    pub fn read_party_stats(&self) -> Result<Vec<Value>, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
     /// Background sampler (10 Hz while enabled).
     pub fn spawn_sampler(&self) {
         let me = self.clone();
