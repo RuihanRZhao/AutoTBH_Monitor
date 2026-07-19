@@ -3,6 +3,7 @@
 
 mod currency;
 mod farm;
+mod insights;
 mod memory;
 mod meter;
 mod news;

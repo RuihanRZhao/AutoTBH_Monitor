@@ -226,16 +226,16 @@ async fn h_runs_reset(State(s): State<AppState>, Query(q): Query<Q>) -> impl Int
     Json(s.meter.reset_runs()).into_response()
 }
 
-// ── Engine-dependent (the 2 MB JS game engine is not yet ported to Rust) ─────
-fn engine_pending(feature: &str) -> Value {
-    json!({
-        "found": save::save_exists(),
-        "enginePending": true,
-        "note": format!("{feature} requires the TBH simulation engine (port in progress)"),
-        "insights": Value::Null,
-    })
+/// Save-derived insights (native Rust; simulation-dependent parts are flagged, not guessed).
+async fn h_insights() -> impl IntoResponse {
+    if !save::save_exists() {
+        return Json(json!({ "found": false }));
+    }
+    match crate::insights::build() {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "found": true, "error": e.to_string() })),
+    }
 }
-async fn h_insights() -> impl IntoResponse { Json(engine_pending("insights")) }
 async fn h_upgrades() -> impl IntoResponse {
     Json(json!({ "found": save::save_exists(), "enginePending": true, "slots": [] }))
 }

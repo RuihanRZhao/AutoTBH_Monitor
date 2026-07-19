@@ -101,10 +101,13 @@ pub fn aggregate_runs_for_farm(runs: &[RunRecord], opts: &AggregateOpts) -> Valu
         e.2 += 1;
         e.3 = e.3.max(s["lastAt"].as_f64().unwrap_or(0.0));
     }
+    // Deterministic: HashMap iteration order varies run to run, so ties on `lastAt` used to
+    // pick a different tier each time — and the whole clear-time calibration keys on this.
+    // Break ties on the higher difficulty id.
     let mut primary_difficulty: Option<i64> = None;
-    let mut best = -1.0f64;
-    for (_d, v) in by_diff.iter() {
-        if v.3 > best { best = v.3; primary_difficulty = Some(v.0); }
+    let mut best = (-1.0f64, i64::MIN);
+    for v in by_diff.values() {
+        if (v.3, v.0) > best { best = (v.3, v.0); primary_difficulty = Some(v.0); }
     }
     let mut diffs: Vec<Value> = by_diff
         .values()

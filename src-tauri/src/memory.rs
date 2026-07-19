@@ -227,7 +227,16 @@ impl GameProcess {
         if ent == 0 || cnt < 0 || cnt > cap { return Ok(Vec::new()); }
         let mut out = Vec::new();
         let (mut used, mut j) = (0i32, 0i32);
-        let limit = cnt + 64;
+        // Bound by the entries array's REAL length: `cnt` counts live entries, so `cnt + 64`
+        // stops early when more than 64 tombstoned slots precede the live ones — which silently
+        // yields no combat gold (and therefore a permanently empty gold/hr column).
+        let limit = self
+            .read_il2cpp_array_len(ent)
+            .ok()
+            .filter(|n| *n > 0 && *n < 1_000_000)
+            .map(|n| n as i32)
+            .unwrap_or(cnt + 64)
+            .max(cnt);
         while used < cnt && j < limit {
             let e = ent + 0x20 + (j as usize) * 0x18;
             j += 1;
@@ -248,7 +257,13 @@ impl GameProcess {
         if ent == 0 || cnt < 0 || cnt > cap { return Ok(Vec::new()); }
         let mut out = Vec::new();
         let (mut used, mut j) = (0i32, 0i32);
-        let limit = cnt + 64;
+        let limit = self
+            .read_il2cpp_array_len(ent)
+            .ok()
+            .filter(|n| *n > 0 && *n < 1_000_000)
+            .map(|n| n as i32)
+            .unwrap_or(cnt + 64)
+            .max(cnt);
         while used < cnt && j < limit {
             let e = ent + 0x20 + (j as usize) * 0x10;
             j += 1;
