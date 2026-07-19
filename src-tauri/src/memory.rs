@@ -297,7 +297,7 @@ impl GameProcess {
         while off < self.module_size {
             let len = CHUNK.min(self.module_size - off);
             if let Ok(buf) = self.read_bytes(self.module_base + off, len) {
-                for i in 0..buf.len().saturating_sub(pat.len()) {
+                for i in 0..=buf.len().saturating_sub(pat.len()) {
                     if pat.iter().enumerate().all(|(j, p)| match p { Some(b) => buf[i + j] == *b, None => true }) {
                         hits.push(self.module_base + off + i);
                         if hits.len() >= limit { return hits; }

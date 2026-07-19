@@ -126,14 +126,12 @@ pub fn parse_price_history(html: &str) -> Option<Vec<PricePoint>> {
 /// Best-effort parse of Steam's history timestamps ("Jul 01 2026 01:00:00 +0000").
 fn parse_steam_date(s: &str) -> Option<i64> {
     use chrono::{NaiveDateTime, TimeZone, Utc};
-    for fmt in ["%b %d %Y %H:%M:%S %z", "%b %d %Y %H:%M:%S"] {
-        if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%b %d %Y %H:%M:%S %z") {
-            let _ = fmt;
-            return Some(dt.timestamp_millis());
-        }
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
-        }
+    // Offset-aware first ("Jul 01 2026 01:00:00 +0000"), then naive (assume UTC).
+    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%b %d %Y %H:%M:%S %z") {
+        return Some(dt.timestamp_millis());
+    }
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%b %d %Y %H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&ndt).timestamp_millis());
     }
     None
 }

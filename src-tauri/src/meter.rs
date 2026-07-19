@@ -150,9 +150,13 @@ impl Meter {
         if std::fs::write(&tmp, data).is_ok() { let _ = std::fs::rename(&tmp, path); }
     }
 
-    fn persist(&self) {
+    /// `live.json` is small and written every tick. `runs.json` is only rewritten when a run
+    /// actually closed — it used to be re-serialized in full 10x/second.
+    fn persist(&self, runs_changed: bool) {
         let g = self.inner.lock().unwrap();
-        if let Ok(s) = serde_json::to_string(&g.runs) { Self::write_atomic(&self.runs_path(), &s); }
+        if runs_changed {
+            if let Ok(s) = serde_json::to_string(&g.runs) { Self::write_atomic(&self.runs_path(), &s); }
+        }
         if let Some(live) = &g.live {
             if let Ok(s) = serde_json::to_string(live) { Self::write_atomic(&self.live_path(), &s); }
         }
@@ -191,8 +195,8 @@ impl Meter {
         if let Ok(s) = serde_json::to_string(&g.runs) { let _ = std::fs::write(dir.join("runs.json"), s); }
         g.runs.clear();
         drop(g);
-        self.persist();
-        json!({ "ok": true, "archived": total, "total": total, "archive": ts.to_string() })
+        self.persist(true);
+        json!({ "ok": true, "archived": total, "total": 0, "archive": ts.to_string() })
     }
 
     pub fn set_enabled(&self, on: bool) { self.inner.lock().unwrap().enabled = on; }
@@ -303,7 +307,7 @@ impl Meter {
                                 // value is the inner Dict8B*
                                 for (sub, v) in proc.dict8b_items(val as usize, 100_000).unwrap_or_default() {
                                     if sub == gold_earn && v > 0 && v < 1_000_000_000_000_000 {
-                                        gold = Some(v);
+                                        if gold.is_none() { gold = Some(v); }
                                     }
                                 }
                             }
@@ -360,37 +364,19 @@ impl Meter {
         }
         g.last_hp = current;
 
-        if damage_this_tick > 0.0 {
-            g.total_damage += damage_this_tick;
-            g.window.push_back((ts, damage_this_tick));
-        }
-        let win_ms = cfg.tuning.dps_window_sec * 1000.0;
-        while let Some(&(t0, _)) = g.window.front() {
-            if ts - t0 > win_ms { g.window.pop_front(); } else { break; }
-        }
-        // Upstream semantics: fixed divisor (ramps up over the first window).
-        let dps = Some(g.window.iter().map(|(_, d)| *d).sum::<f64>() / cfg.tuning.dps_window_sec);
-
-        // Kills from list shrinkage.
-        if alive < g.last_alive { g.kills += g.last_alive - alive; }
-        g.last_alive = alive;
-
-        // Run lifecycle: open on first monsters, close when the stage clears out or changes.
+        // Run lifecycle is resolved BEFORE folding this tick's damage in, so the opening tick's
+        // damage lands in the new run instead of being wiped by the reset (and a stage change
+        // closes the old run and opens the new one on the same tick, losing nothing).
         let in_combat = alive > 0;
         let stage_changed = stage_key.is_some() && g.run_stage.is_some() && stage_key != g.run_stage;
-        if in_combat && g.run_start_ts.is_none() {
-            g.run_start_ts = Some(ts);
-            g.run_start_gold = gold;
-            g.run_stage = stage_key;
-            g.total_damage = 0.0;
-            g.kills = 0;
-        } else if g.run_start_ts.is_some() && (!in_combat || stage_changed) {
+        let mut runs_changed = false;
+
+        if g.run_start_ts.is_some() && (!in_combat || stage_changed) {
             let start = g.run_start_ts.take().unwrap();
             let g0 = g.run_start_gold.take();
             let stage = g.run_stage.take();
             let clear = (ts - start) / 1000.0;
             let total_damage = g.total_damage;
-            // Only record a meaningful attempt.
             if clear >= 3.0 && total_damage > 0.0 {
                 let rec = RunRecord {
                     ts,
@@ -405,7 +391,17 @@ impl Meter {
                 };
                 g.runs.push(rec);
                 if g.runs.len() > 2000 { let n = g.runs.len() - 2000; g.runs.drain(0..n); }
+                runs_changed = true;
             }
+            g.total_damage = 0.0;
+            g.kills = 0;
+            g.window.clear();
+        }
+        // Not `else if`: a stage change closes and reopens within the same tick.
+        if in_combat && g.run_start_ts.is_none() {
+            g.run_start_ts = Some(ts);
+            g.run_start_gold = gold;
+            g.run_stage = stage_key;
             g.total_damage = 0.0;
             g.kills = 0;
             g.window.clear();
@@ -413,6 +409,24 @@ impl Meter {
         if stage_key.is_some() && g.run_start_ts.is_some() && g.run_stage.is_none() {
             g.run_stage = stage_key;
         }
+
+        if damage_this_tick > 0.0 {
+            g.total_damage += damage_this_tick;
+            g.window.push_back((ts, damage_this_tick));
+        }
+        let win_ms = cfg.tuning.dps_window_sec * 1000.0;
+        while let Some(&(t0, _)) = g.window.front() {
+            if ts - t0 > win_ms { g.window.pop_front(); } else { break; }
+        }
+        // Upstream semantics: fixed divisor (ramps up over the first window).
+        // max(0.0) also normalises -0.0, which serializes as "-0.0" and reads like a bug.
+        let dps = Some(
+            (g.window.iter().map(|(_, d)| *d).sum::<f64>() / cfg.tuning.dps_window_sec).max(0.0),
+        );
+
+        // Kills from list shrinkage.
+        if alive < g.last_alive { g.kills += g.last_alive - alive; }
+        g.last_alive = alive;
 
         let elapsed = g.run_start_ts.map(|s| (ts - s) / 1000.0);
         let total_damage = g.total_damage;
@@ -425,7 +439,7 @@ impl Meter {
             elapsed_sec: elapsed,
         });
         drop(g);
-        self.persist();
+        self.persist(runs_changed);
     }
 
     #[cfg(not(windows))]

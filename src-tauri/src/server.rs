@@ -29,6 +29,23 @@ pub struct AppState {
     pub currency: Arc<AtomicU32>,
     pub meter: Meter,          // built-in live DPS/gold/EXP + run tracker
     pub scan: Arc<std::sync::Mutex<ScanState>>, // Deep Scan progress
+    pub items_progress: Arc<std::sync::Mutex<steam::ItemsProgress>>,
+}
+
+const ITEMS_TTL_MS: i64 = 10 * 60 * 1000;
+
+/// Never panic on an out-of-table currency code (e.g. a bogus TSM_CURRENCY): fall back to USD.
+fn cur_or_usd(code: u32) -> currency::Currency {
+    currency::get(code).unwrap_or(currency::Currency {
+        iso: "USD", symbol: "$", decimals: 2, name: "US Dollar", country: "US",
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Background "Deep Scan" state: probes every stash entry's order book.
@@ -78,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meter/status", get(h_meter_status))
         .route("/api/meter/enable", post(h_meter_enable))
         .route("/api/items", get(h_items))
+        .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
         .route("/api/market-depth", get(h_market_depth))
         .route("/api/pricehistory", get(h_pricehistory))
@@ -85,7 +103,20 @@ pub fn router(state: AppState) -> Router {
         .route("/api/resolve-hash", get(h_resolve_hash))
         .route("/api/updates", get(h_updates))
         .fallback_service(static_svc)
-        .layer(CorsLayer::permissive())
+        // Only our own window may call this API. `permissive()` let ANY page the user had open
+        // read their save-derived stash and POST /api/runs/reset.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(
+                    [
+                        format!("http://localhost:{}", port()).parse().unwrap(),
+                        format!("http://127.0.0.1:{}", port()).parse().unwrap(),
+                    ]
+                    .to_vec(),
+                )
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
         .with_state(state)
 }
 
@@ -225,7 +256,7 @@ async fn h_stash_orders(State(s): State<AppState>, Query(q): Query<Q>) -> impl I
         Err(e) => return Json(json!({ "found": true, "error": e.to_string() })),
     };
     let code = s.currency.load(Ordering::Relaxed);
-    let info = currency::get(code).unwrap();
+    let info = cur_or_usd(code);
     let cat = wiki::ensure_catalog(&s.data_dir).await;
 
     let empty = vec![];
@@ -290,7 +321,7 @@ async fn h_stash_scan(State(s): State<AppState>, Query(q): Query<Q>) -> impl Int
     let action = q.get("action").map(|s| s.as_str()).unwrap_or("status");
     if !save::save_exists() { return Json(json!({ "found": false })); }
     let code = s.currency.load(Ordering::Relaxed);
-    let info = currency::get(code).unwrap();
+    let info = cur_or_usd(code);
 
     if action == "start" {
         {
@@ -333,30 +364,56 @@ async fn run_stash_scan(s: AppState, code: u32) {
             return;
         }
     };
-    // allEntries covers items the market cache never matched (materials with buy orders only)
+    // allEntries (not `items`) is the point of Deep Scan: it includes entries the market cache
+    // never matched — materials with no sell listing but plenty of buy orders.
     let entries: Vec<Value> = stash
-        .get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        .get("allEntries").and_then(|v| v.as_array()).cloned()
+        .or_else(|| stash.get("items").and_then(|v| v.as_array()).cloned())
+        .unwrap_or_default();
     s.scan.lock().unwrap().total = entries.len();
 
     let (mut instant, mut suggested_total) = (0i64, 0i64);
     let mut out: Vec<Value> = Vec::new();
     for e in entries {
-        let hash = e.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // allEntries uses `searchName`; fall back to `hash` when scanning the matched list.
+        let hash = e.get("searchName").and_then(|v| v.as_str())
+            .or_else(|| e.get("hash").and_then(|v| v.as_str()))
+            .unwrap_or("").to_string();
         let qty = e.get("qty").and_then(|v| v.as_i64()).unwrap_or(1);
+        let mut rate_limited = false;
         if !hash.is_empty() {
-            if let Ok(ob) = steam::fetch_orderbook(save::TBH_APPID, &hash, code).await {
-                let max_buy = ob["maxBuyCents"].as_i64().unwrap_or(0);
-                let min_sell = ob["minSellCents"].as_i64().unwrap_or(0);
-                let sug = pricing::suggested_list_cents(min_sell, max_buy);
-                instant += max_buy * qty;
-                suggested_total += sug * qty;
-                out.push(json!({
-                    "name": e.get("name"), "hash": hash, "qty": qty, "kind": e.get("kind"),
-                    "matched": true, "maxBuyCents": max_buy, "minSellCents": min_sell,
-                    "buyCount": ob["buyCount"], "liquidity": ob["liquidity"],
-                    "subtotalCents": max_buy * qty, "suggestedCents": sug,
-                }));
+            match steam::fetch_orderbook(save::TBH_APPID, &hash, code).await {
+                Ok(ob) => {
+                    let max_buy = ob["maxBuyCents"].as_i64().unwrap_or(0);
+                    let min_sell = ob["minSellCents"].as_i64().unwrap_or(0);
+                    let sug = pricing::suggested_list_cents(min_sell, max_buy);
+                    instant += max_buy * qty;
+                    suggested_total += sug * qty;
+                    out.push(json!({
+                        "name": e.get("name"), "hash": hash, "qty": qty, "kind": e.get("kind"),
+                        "matched": true, "maxBuyCents": max_buy, "minSellCents": min_sell,
+                        "buyCount": ob["buyCount"], "liquidity": ob["liquidity"],
+                        "subtotalCents": max_buy * qty, "suggestedCents": sug,
+                    }));
+                }
+                Err(err) => {
+                    // Record the failure instead of dropping the row: otherwise the UI reports
+                    // "done, N/N" with a total that silently excludes every failed item.
+                    let msg = err.to_string();
+                    rate_limited = msg.contains("429");
+                    out.push(json!({
+                        "name": e.get("name"), "hash": hash, "qty": qty, "kind": e.get("kind"),
+                        "matched": false, "error": msg,
+                    }));
+                }
             }
+        }
+        if rate_limited {
+            let mut st = s.scan.lock().unwrap();
+            st.error = Some("rate-limited by Steam — partial results".into());
+            st.items = out;
+            st.status = "error".into();
+            return;
         }
         // Scope the guard: a std MutexGuard held across an await makes the future non-Send.
         {
@@ -398,22 +455,66 @@ async fn h_meter_enable(State(s): State<AppState>, Query(q): Query<Q>) -> impl I
 async fn h_items(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
     let code = s.currency.load(Ordering::Relaxed);
-    match steam::fetch_all_items(appid, code).await {
-        Ok(mut v) => {
-            // best-effort cache for /api/stash cross-reference (pre-enrichment)
-            let _ = std::fs::create_dir_all(s.data_dir.join("cache"));
-            let _ = std::fs::write(s.data_dir.join("cache/items.json"), v.to_string());
-            let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+    let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US").to_string();
+    let force = q.get("refresh").map(|v| v == "1").unwrap_or(false);
+    let cached = read_bundled(&s, "cache/items.json");
+    let age_ms = cached
+        .as_ref()
+        .and_then(|c| c.get("fetchedAt").and_then(|v| v.as_i64()))
+        .map(|t| now_ms() - t)
+        .unwrap_or(i64::MAX);
+    let running = s.items_progress.lock().unwrap().status == "running";
+
+    // A full sweep is ~750 items at 10/page with a 1.8 s cadence (minutes), so it must never
+    // block the request. Serve what we have and refresh in the background; the UI polls
+    // /api/items-progress. Matches the original's refresh-dedup behaviour.
+    let need_refresh = force || age_ms > ITEMS_TTL_MS;
+    if need_refresh && !running {
+        let s2 = s.clone();
+        let prog = s.items_progress.clone();
+        {
+            let mut g = prog.lock().unwrap();
+            *g = steam::ItemsProgress { status: "running".into(), started_at: now_ms(), ..Default::default() };
+        }
+        tokio::spawn(async move {
+            let res = steam::fetch_all_items(appid, code, Some(prog.clone())).await;
+            let mut g = prog.lock().unwrap();
+            match res {
+                Ok(v) => {
+                    let _ = std::fs::create_dir_all(s2.data_dir.join("cache"));
+                    let _ = std::fs::write(s2.data_dir.join("cache/items.json"), v.to_string());
+                    g.got = v.get("items").and_then(|i| i.as_array()).map(|a| a.len()).unwrap_or(0);
+                    g.status = "done".into();
+                }
+                Err(e) => { g.status = "error".into(); g.error = Some(e.to_string()); }
+            }
+            g.ended_at = now_ms();
+        });
+    }
+
+    match cached {
+        Some(mut v) => {
             if let Some(cat) = wiki::ensure_catalog(&s.data_dir).await {
                 if let Some(items) = v.get_mut("items").and_then(|x| x.as_array_mut()) {
-                    wiki::enrich_items(&cat, items, lang);
+                    wiki::enrich_items(&cat, items, &lang);
                 }
             }
-            if let Some(o) = v.as_object_mut() { o.insert("stale".into(), json!(false)); }
+            if let Some(o) = v.as_object_mut() {
+                o.insert("stale".into(), json!(age_ms > ITEMS_TTL_MS));
+                o.insert("refreshing".into(), json!(need_refresh || running));
+            }
             Json(v)
         }
-        Err(e) => Json(json!({ "error": e.to_string() })),
+        None => Json(json!({
+            "appid": appid, "fetchedAt": 0, "total": 0, "items": [],
+            "currency": currency::info_json(code),
+            "stale": true, "refreshing": true,
+        })),
     }
+}
+
+async fn h_items_progress(State(s): State<AppState>) -> impl IntoResponse {
+    Json(json!(*s.items_progress.lock().unwrap()))
 }
 async fn h_orderbook(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
@@ -424,40 +525,110 @@ async fn h_orderbook(State(s): State<AppState>, Query(q): Query<Q>) -> impl Into
         Err(e) => err500(&e.to_string()),
     }
 }
-async fn h_market_depth(Query(q): Query<Q>) -> impl IntoResponse {
+async fn h_market_depth(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
     let hash = match q.get("hash") { Some(h) => h, None => return Json(json!({ "ok": false })) };
-    match steam::fetch_orderbook(appid, hash, 1).await {
+    let code = s.currency.load(Ordering::Relaxed); // was hardcoded to USD
+    match steam::fetch_orderbook(appid, hash, code).await {
         Ok(v) => Json(json!({ "ok": true, "hash": hash, "buyCount": v["buyCount"], "sellCount": v["sellCount"], "dailyVolume": Value::Null })),
         Err(e) => Json(json!({ "ok": false, "hash": hash, "error": e.to_string() })),
     }
 }
-async fn h_pricehistory(Query(q): Query<Q>) -> impl IntoResponse {
+async fn h_pricehistory(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
     let hash = match q.get("hash") { Some(h) => h, None => return Json(json!({ "found": false })) };
+    let code = s.currency.load(Ordering::Relaxed);
+    let info = cur_or_usd(code);
+    // Steam's embedded history is always USD. Emitting it raw while labelling the response
+    // with the display currency put the chart and the order book on different scales
+    // (e.g. an IDR user saw Rp 34,171 vs Rp 2.15 for the same item).
+    let rate = if info.iso == "USD" { 1.0 } else { steam::usd_to_local(info.iso).await };
+    let conv = |usd: f64| -> i64 { (usd * 100.0 * rate).round() as i64 };
+
     match steam::fetch_price_history(appid, hash).await {
         Ok(points) => {
-            let pts: Vec<Value> = points.iter().map(|p| json!({ "t": p.t, "priceCents": (p.price * 100.0).round() as i64, "vol": p.vol })).collect();
+            let pts: Vec<Value> = points
+                .iter()
+                .map(|p| json!({ "t": p.t, "priceCents": conv(p.price), "vol": p.vol }))
+                .collect();
             let metrics = pricing::history_metrics(&points).map(|m| json!({
-                "trend": m.trend, "dailyVolume": m.daily_volume, "pointCount": m.point_count,
+                "trend": m.trend,
+                "dailyVolume": m.daily_volume,
+                "pointCount": m.point_count,
+                "weeklyAvgCents": m.weekly_avg.map(conv),
+                "recentP75Cents": m.recent_p75.map(conv),
             }));
-            Json(json!({ "found": true, "hash": hash, "count": pts.len(), "points": pts, "metrics": metrics }))
+            Json(json!({
+                "found": true, "hash": hash, "symbol": info.symbol, "currency": code,
+                "count": pts.len(), "points": pts, "metrics": metrics,
+            }))
         }
         Err(e) => Json(json!({ "found": true, "hash": hash, "error": e.to_string() })),
     }
 }
-async fn h_hover(Query(q): Query<Q>) -> impl IntoResponse {
+/// Full hover intelligence: order book + price history metrics + trade signals + wiki.
+async fn h_hover(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);
-    let hash = match q.get("hash") { Some(h) => h, None => return Json(json!({ "found": false })) };
-    match steam::fetch_orderbook(appid, hash, 1).await {
-        Ok(ob) => Json(json!({
-            "found": true, "hash": hash,
-            "lowestSellCents": ob["minSellCents"], "highestBuyCents": ob["maxBuyCents"],
-            "buyCount": ob["buyCount"], "sellCount": ob["sellCount"], "liquidity": ob["liquidity"],
-            "suggestedCents": pricing::suggested_list_cents(ob["minSellCents"].as_i64().unwrap_or(0), ob["maxBuyCents"].as_i64().unwrap_or(0)),
-        })),
-        Err(e) => Json(json!({ "found": true, "hash": hash, "error": e.to_string() })),
+    let hash = match q.get("hash") { Some(h) => h.clone(), None => return Json(json!({ "found": false })) };
+    let lang = q.get("lang").map(|s| s.as_str()).unwrap_or("en-US");
+    let code = s.currency.load(Ordering::Relaxed); // was hardcoded to USD
+    let info = cur_or_usd(code);
+
+    let ob = match steam::fetch_orderbook(appid, &hash, code).await {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "found": true, "hash": hash, "error": e.to_string() })),
+    };
+    let min_sell = ob["minSellCents"].as_i64().unwrap_or(0);
+    let max_buy = ob["maxBuyCents"].as_i64().unwrap_or(0);
+    let buy_count = ob["buyCount"].as_i64().unwrap_or(0);
+
+    // Price history is best-effort: it needs the listing page, which Steam may withhold.
+    let metrics = steam::fetch_price_history(appid, &hash)
+        .await
+        .ok()
+        .and_then(|pts| pricing::history_metrics(&pts));
+    let daily_volume = metrics.as_ref().map(|m| m.daily_volume);
+    let usd_to_local = if info.iso == "USD" { 1.0 } else { steam::usd_to_local(info.iso).await };
+
+    let signals = pricing::analyse_price(&pricing::AnalyseInput {
+        min_sell_cents: min_sell, max_buy_cents: max_buy, buy_count,
+        daily_volume, metrics, usd_to_local,
+    });
+
+    let suggested = pricing::suggested_list_cents(min_sell, max_buy);
+    // Match the reference thresholds: `liquid` requires a TIGHT spread AND real depth, and the
+    // middle band is deliberately untagged rather than optimistically called liquid.
+    let spread = pricing::spread_pct_of(min_sell, max_buy);
+    let tag: Value = if max_buy <= 0 {
+        json!("no-buyers")
+    } else if spread.map(|s| s <= 8.0).unwrap_or(false) && buy_count >= 50 {
+        json!("liquid")
+    } else if spread.map(|s| s > 25.0).unwrap_or(false) {
+        json!("wide-spread")
+    } else {
+        Value::Null
+    };
+
+    let wiki_v = match wiki::ensure_catalog(&s.data_dir).await {
+        Some(c) => c.enrich_hash(&hash, lang),
+        None => Value::Null,
+    };
+
+    let mut out = json!({
+        "found": true, "hash": hash, "symbol": info.symbol, "currency": code,
+        "lowestSellCents": min_sell, "highestBuyCents": max_buy,
+        "suggestedCents": suggested,
+        "netAfterFeeCents": pricing::net_after_fee_cents(suggested),
+        "spreadPct": spread,
+        "buyCount": buy_count, "sellCount": ob["sellCount"], "liquidity": ob["liquidity"],
+        "dailyVolume": daily_volume, "tag": tag,
+        "hasHistory": daily_volume.is_some(),
+        "wiki": wiki_v,
+    });
+    if let (Some(o), Some(sig)) = (out.as_object_mut(), signals.as_object()) {
+        for (k, v) in sig { o.insert(k.clone(), v.clone()); }
     }
+    Json(out)
 }
 async fn h_resolve_hash(Query(q): Query<Q>) -> impl IntoResponse {
     let appid: i64 = q.get("appid").and_then(|v| v.parse().ok()).unwrap_or(save::TBH_APPID);

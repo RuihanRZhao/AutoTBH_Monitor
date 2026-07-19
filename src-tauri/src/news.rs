@@ -13,7 +13,8 @@ fn xml_decode(s: &str) -> String {
     let cdata = Regex::new(r"(?s)<!\[CDATA\[(.*?)\]\]>").unwrap();
     let s = cdata.replace_all(s, "$1").to_string();
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
-        .replace("&#0?39;", "'").replace("&apos;", "'").replace("&amp;", "&").trim().to_string()
+        .replace("&#039;", "'").replace("&#39;", "'").replace("&apos;", "'")
+        .replace("&amp;", "&").trim().to_string()
 }
 
 static ITEM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<item\b[^>]*>(.*?)</item>").unwrap());

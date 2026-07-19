@@ -49,7 +49,13 @@ pub fn run() {
             save::set_data_dir(data_dir.clone());
             steam::set_data_dir(data_dir.clone());
 
-            let initial_currency: u32 = std::env::var("TSM_CURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            // Validate against the table — an out-of-range code used to panic every handler
+            // that looked it up.
+            let initial_currency: u32 = std::env::var("TSM_CURRENCY")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|c| currency::get(*c).is_some())
+                .unwrap_or(1);
 
             // Built-in live meter (DPS / gold / EXP / run tracker). Opt-in: off until enabled.
             let meter = meter::Meter::new(data_dir.clone());
@@ -64,6 +70,7 @@ pub fn run() {
                 currency: Arc::new(AtomicU32::new(initial_currency)),
                 meter,
                 scan: Arc::new(std::sync::Mutex::new(Default::default())),
+                items_progress: Arc::new(std::sync::Mutex::new(Default::default())),
             };
 
             // Bind the listener first (so the window can load immediately), then serve in the background.

@@ -325,6 +325,10 @@ pub fn read_stash(market_items: &[Value]) -> anyhow::Result<Value> {
     let mut owned_gear = 0i64; let mut owned_mat = 0i64; let mut owned_other = 0i64;
     let mut unknown: HashMap<String, i64> = HashMap::new();
     let mut unlisted_summary: HashMap<String, i64> = HashMap::new();
+    // EVERY stash entry keyed by the market hash we'd search with, matched or not. Deep Scan
+    // needs this: many materials have no sell listing (so they never appear in the market
+    // cache) yet do have hundreds of BUY orders. Aggregating only matched items hides them.
+    let mut entries: Map<String, Value> = Map::new();
 
     for slot in &slots {
         let iid = val_to_string(&slot["ItemUniqueId"]);
@@ -366,22 +370,23 @@ pub fn read_stash(market_items: &[Value]) -> anyhow::Result<Value> {
             }
         }
 
-        if let Some(mi) = m {
-            let hash = vstr(&mi, "hash");
+        // Borrow (don't move) — `m` is still needed below to build the Deep Scan entry.
+        if let Some(mi) = m.as_ref() {
+            let hash = vstr(mi, "hash");
             let has_listing = mi.get("hasMarketListing").map(|v| v.as_bool() != Some(false)).unwrap_or(true);
             let price_pending = mi.get("pricePending").and_then(|v| v.as_bool()).unwrap_or(false);
             let price_cents = mi.get("priceCents").and_then(|v| v.as_i64()).unwrap_or(0);
             let entry = agg.entry(hash.clone()).or_insert_with(|| json!({
-                "name": vstr(&mi, "name"), "hash": hash, "priceCents": price_cents,
+                "name": vstr(mi, "name"), "hash": hash, "priceCents": price_cents,
                 "priceText": mi.get("priceText").cloned().unwrap_or(Value::Null),
-                "type": vstr(&mi, "type"), "icon": vstr(&mi, "icon"), "color": vstr(&mi, "color"),
-                "url": vstr(&mi, "url"), "qty": 0, "kind": kind,
+                "type": vstr(mi, "type"), "icon": vstr(mi, "icon"), "color": vstr(mi, "color"),
+                "url": vstr(mi, "url"), "qty": 0, "kind": kind,
                 "hasMarketListing": has_listing, "pricePending": price_pending,
             }));
             entry["qty"] = json!(entry["qty"].as_i64().unwrap_or(0) + 1);
             if !has_listing {
                 unlisted += 1;
-                *unlisted_summary.entry(vstr(&mi, "name")).or_insert(0) += 1;
+                *unlisted_summary.entry(vstr(mi, "name")).or_insert(0) += 1;
             } else if price_pending {
                 pending += 1;
             } else {
@@ -396,6 +401,38 @@ pub fn read_stash(market_items: &[Value]) -> anyhow::Result<Value> {
             });
             *unknown.entry(label).or_insert(0) += 1;
         }
+
+        // Record the Deep Scan entry for EVERY slot, matched or not.
+        let is_g = row.map(|r| is_gear(r)).unwrap_or(false);
+        let gear_base = row.filter(|r| is_gear(r)).and_then(|r| name_from_name_key(r, names));
+        let gear_hash = row.filter(|r| is_gear(r)).and_then(|r| gear_market_hash(r, names));
+        let need_grade_probe = is_g && gear_hash.is_none() && gear_base.is_some();
+        let entry_kind = if is_g { "gear" } else if localized.is_some() { "material" } else { "other" };
+        let search_name = match (&m, &gear_hash, is_g, &gear_base, &localized) {
+            (Some(mi), _, _, _, _) => vstr(mi, "hash"),
+            (None, Some(h), _, _, _) => h.clone(),
+            (None, None, true, Some(b), _) => b.clone(),
+            (None, None, false, _, Some(l)) => l.clone(),
+            _ => String::new(),
+        };
+        if !search_name.is_empty() {
+            let key = search_name.to_lowercase();
+            let tab = slot.get("Index").and_then(|v| v.as_i64()).map(|i| i / 49);
+            let e = entries.entry(key).or_insert_with(|| json!({
+                "searchName": search_name,
+                "name": m.as_ref().map(|mi| vstr(mi, "name")).or(localized.clone()).unwrap_or_default(),
+                "qty": 0, "kind": entry_kind, "matched": false,
+                "needGradeProbe": need_grade_probe,
+                "baseName": gear_base, "tabs": {},
+            }));
+            e["qty"] = json!(e["qty"].as_i64().unwrap_or(0) + 1);
+            if m.is_some() { e["matched"] = json!(true); }
+            if let Some(t) = tab {
+                let tk = t.to_string();
+                let cur = e["tabs"].get(&tk).and_then(|v| v.as_i64()).unwrap_or(0);
+                e["tabs"][tk] = json!(cur + 1);
+            }
+        }
     }
 
     let mut list: Vec<Value> = agg.into_iter().map(|(_, v)| v).collect();
@@ -404,6 +441,10 @@ pub fn read_stash(market_items: &[Value]) -> anyhow::Result<Value> {
         let bv = b["priceCents"].as_i64().unwrap_or(0) * b["qty"].as_i64().unwrap_or(1);
         bv.cmp(&av)
     });
+
+    // Deep Scan entries, most-owned first.
+    let mut all_entries: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
+    all_entries.sort_by(|a, b| b["qty"].as_i64().unwrap_or(0).cmp(&a["qty"].as_i64().unwrap_or(0)));
 
     let mut unlisted_vec: Vec<(String, i64)> = unlisted_summary.into_iter().collect();
     unlisted_vec.sort_by(|a, b| b.1.cmp(&a.1));
@@ -427,6 +468,7 @@ pub fn read_stash(market_items: &[Value]) -> anyhow::Result<Value> {
             "wikiNamesAdded": 0,
         },
         "items": list,
+        "allEntries": all_entries,
         "unlistedSummary": unlisted_vec.into_iter().take(30).map(|(k, n)| json!({"label": k, "qty": n})).collect::<Vec<_>>(),
         "unknownSummary": unknown_vec.into_iter().take(30).map(|(k, n)| json!({"label": k, "qty": n})).collect::<Vec<_>>(),
     }))

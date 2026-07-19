@@ -53,6 +53,14 @@ static GRADE_RE: Lazy<Regex> = Lazy::new(|| {
 });
 static NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
 
+/// Extract the grade a Steam market hash carries: "Long Sword (Immortal) A" -> "IMMORTAL".
+pub fn grade_from_hash(hash: &str) -> Option<String> {
+    GRADE_RE
+        .captures(hash)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_uppercase())
+}
+
 /// "Long Sword (Immortal) A" -> "long sword"
 pub fn norm_name(s: &str) -> String {
     let stripped = GRADE_RE.replace(s, "").to_lowercase();
@@ -219,27 +227,37 @@ pub async fn ensure_catalog(data_dir: &Path) -> Option<Arc<Catalog>> {
             return Some(c);
         }
     }
-    // disk cache
+    // disk cache — keep it even when stale, as the offline fallback below.
     let path = cache_path(data_dir);
+    let mut stale: Option<Arc<Catalog>> = cached();
     if let Ok(txt) = std::fs::read_to_string(&path) {
         if let Ok(c) = serde_json::from_str::<Catalog>(&txt) {
-            if now_ms().saturating_sub(c.fetched_at) < TTL_MS && !c.by_norm.is_empty() {
+            if !c.by_norm.is_empty() {
+                let fresh = now_ms().saturating_sub(c.fetched_at) < TTL_MS;
                 let arc = Arc::new(c);
                 *CATALOG.lock().unwrap() = Some(arc.clone());
-                return Some(arc);
+                if fresh { return Some(arc); }
+                stale = Some(arc);
             }
         }
     }
-    // network
+    // network — on failure, fall back to the stale catalog rather than returning None.
+    // Returning None made every caller silently drop localized names, icons, rarity colours
+    // and wiki links for offline users.
+    macro_rules! or_stale {
+        ($e:expr) => {
+            match $e { Some(v) => v, None => return stale }
+        };
+    }
     let version = fetch_json(&format!("{WIKI_BASE}/data/manifest.json"))
         .await
         .ok()
         .and_then(|m| m.get("version").and_then(|v| v.as_str()).map(String::from))
         .unwrap_or_default();
-    let items = fetch_json(&format!("{WIKI_BASE}/data/items.json")).await.ok()?;
-    let rows: Vec<RawItem> = serde_json::from_value(items).ok()?;
+    let items = or_stale!(fetch_json(&format!("{WIKI_BASE}/data/items.json")).await.ok());
+    let rows: Vec<RawItem> = or_stale!(serde_json::from_value(items).ok());
     let cat = build_catalog(version, rows);
-    if cat.by_norm.is_empty() { return None; }
+    if cat.by_norm.is_empty() { return stale; }
     if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
     if let Ok(s) = serde_json::to_string(&cat) { let _ = std::fs::write(&path, s); }
     let arc = Arc::new(cat);
@@ -260,10 +278,19 @@ pub fn enrich_items(cat: &Catalog, items: &mut [Value], lang: &str) {
         if hash.is_empty() { continue; }
         let w = cat.enrich_hash(&hash, lang);
         if w.is_null() { continue; }
+        // The wiki name-index collapses grades onto one base row, so its `grade` is the BASE
+        // item's (usually COMMON). The market hash carries the item's ACTUAL grade — prefer it,
+        // otherwise a "Witch Staff (Legendary) A" renders as COMMON with the wrong colour.
+        let hash_grade = grade_from_hash(&hash);
+        let grade = hash_grade
+            .clone()
+            .or_else(|| w.get("grade").and_then(|g| g.as_str()).map(String::from));
         if let Some(o) = it.as_object_mut() {
-            if let Some(g) = w.get("grade") { o.insert("grade".into(), g.clone()); }
-            if let Some(c) = w.get("gradeColor") { o.insert("gradeColor".into(), c.clone()); }
-            if let Some(r) = w.get("gradeRank") { o.insert("gradeRank".into(), r.clone()); }
+            if let Some(g) = &grade {
+                o.insert("grade".into(), json!(g));
+                o.insert("gradeColor".into(), json!(grade_color(g)));
+                o.insert("gradeRank".into(), json!(grade_rank(g)));
+            }
             if let Some(u) = w.get("wikiUrl") { o.insert("wikiUrl".into(), u.clone()); }
             if let Some(i) = w.get("icon") { o.insert("wikiIcon".into(), i.clone()); }
             if let Some(n) = w.get("name") { o.insert("wikiName".into(), n.clone()); }

@@ -16,6 +16,22 @@ const UA_POOL: &[&str] = &[
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
 ];
 
+/// Progress of a full market-list fetch (mirrors the original's `/api/items-progress`).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ItemsProgress {
+    pub status: String, // idle | running | done | error
+    pub got: usize,
+    pub total: usize,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub error: Option<String>,
+}
+impl Default for ItemsProgress {
+    fn default() -> Self {
+        Self { status: "idle".into(), got: 0, total: 0, started_at: 0, ended_at: 0, error: None }
+    }
+}
+
 static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -61,14 +77,22 @@ async fn get_json(url: &str, referer: Option<&str>) -> anyhow::Result<Value> {
 /// so converting to the display currency is a single multiply by the USD->local rate —
 /// independent of that currency's decimal count. Scaling by the *display* currency's decimals
 /// (as an earlier revision did) silently produced wrong prices for every non-USD user.
-pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<Value> {
+pub async fn fetch_all_items(
+    appid: i64,
+    currency_code: u32,
+    progress: Option<std::sync::Arc<std::sync::Mutex<ItemsProgress>>>,
+) -> anyhow::Result<Value> {
     let info = currency::get(currency_code).unwrap_or(currency::Currency {
         iso: "USD", symbol: "$", decimals: 2, name: "US Dollar", country: "US",
     });
     let rate = if info.iso == "USD" { 1.0 } else { usd_to_local(info.iso).await };
     let mut items: Vec<Value> = Vec::new();
     let mut start = 0i64;
-    for _page in 0..40 {
+    // Steam caps anonymous search/render at 10 results per request regardless of `count`,
+    // and the catalogue is ~750 items, so a 40-page cap silently truncated the list.
+    // Page until Steam returns an empty page (with a generous hard stop as a backstop).
+    const MAX_PAGES: usize = 300;
+    for _page in 0..MAX_PAGES {
         let url = format!(
             "{STEAM_ORIGIN}/market/search/render/?appid={appid}&norender=1&count=100&start={start}&sort_column=price&sort_dir=desc&currency=1"
         );
@@ -79,8 +103,12 @@ pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<V
         let results = j.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         if results.is_empty() { break; }
         for r in &results {
-            let name = r.get("hash_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let hash_name = r.get("hash_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // Keep display name and market hash DISTINCT: the stash matches materials by their
+            // localized display name, so collapsing both onto hash_name loses those matches.
+            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(&hash_name).to_string();
             let sell_price = r.get("sell_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if sell_price <= 0.0 { continue; } // no active listing — don't fabricate a price
             let listings = r.get("sell_listings").and_then(|v| v.as_i64()).unwrap_or(0);
             let icon = r.get("asset_description").and_then(|a| a.get("icon_url")).and_then(|v| v.as_str())
                 .map(|u| format!("https://community.fastly.steamstatic.com/economy/image/{u}/96fx96f"))
@@ -89,15 +117,23 @@ pub async fn fetch_all_items(appid: i64, currency_code: u32) -> anyhow::Result<V
             // sell_price is USD cents (already main x 100); convert straight to the display currency.
             let price_cents = ((sell_price * rate).round() as i64).max(1);
             items.push(json!({
-                "name": name, "hash": name, "priceCents": price_cents,
+                "name": name, "hash": hash_name, "priceCents": price_cents,
                 "priceText": Value::Null, "listings": listings, "type": ty, "color": "", "icon": icon,
-                "url": format!("{STEAM_ORIGIN}/market/listings/{appid}/{}", enc(&name)),
+                "url": format!("{STEAM_ORIGIN}/market/listings/{appid}/{}", enc(&hash_name)),
                 "hasMarketListing": true,
             }));
         }
         let got = results.len() as i64;
         start += got;
-        if got < 10 { break; }
+        let total_hint = j.get("total_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        if let Some(p) = &progress {
+            let mut g = p.lock().unwrap();
+            g.got = items.len();
+            if total_hint > 0 { g.total = total_hint as usize; }
+        }
+        // Only an EMPTY page means we're done — a short page is normal (anon cap is 10).
+        if got == 0 { break; }
+        if total_hint > 0 && start >= total_hint { break; }
         tokio::time::sleep(Duration::from_millis(1800)).await;
     }
     items.sort_by(|a, b| b["priceCents"].as_i64().unwrap_or(0).cmp(&a["priceCents"].as_i64().unwrap_or(0)));
@@ -169,8 +205,13 @@ pub async fn fetch_orderbook(appid: i64, hash: &str, currency_code: u32) -> anyh
     let info = currency::get(eff_code).unwrap_or(currency::Currency {
         iso: "USD", symbol: "$", decimals: 2, name: "US Dollar", country: "US",
     });
+    // NB: sell_price_to_cents() floors at 1 (correct for a real listing price, wrong here).
+    // Steam omits/zeroes amtMaxBuyOrder when there are no buy orders; that must stay 0, or
+    // spread/confidence/instant-sell totals all get a phantom 1-subunit buy order.
     let to_cents = |v: Option<i64>| -> i64 {
-        v.map(|n| currency::sell_price_to_cents(n as f64, info.decimals as i32)).unwrap_or(0)
+        v.filter(|n| *n > 0)
+            .map(|n| currency::sell_price_to_cents(n as f64, info.decimals as i32))
+            .unwrap_or(0)
     };
     let max_buy = to_cents(d.get("amtMaxBuyOrder").and_then(parse_cents));
     let min_sell = to_cents(d.get("amtMinSellOrder").and_then(parse_cents));
@@ -219,17 +260,30 @@ pub async fn resolve_hash_by_name(appid: i64, name: &str) -> anyhow::Result<Opti
     Ok(pricing::parse_search_render(&j, Some(name)))
 }
 
-/// Live FX (Frankfurter) → USD→local rate for a currency.
+/// Live FX (Frankfurter) → USD→local rate, memoized for 24 h.
+///
+/// `/api/hover` is the per-item hot path behind the in-game overlay; without this cache every
+/// hover fired an identical FX request, and once Frankfurter started refusing we silently fell
+/// back to hardcoded 2024-era rates.
+static FX_CACHE: Lazy<std::sync::Mutex<Option<(String, f64, std::time::Instant)>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
+const FX_TTL: Duration = Duration::from_secs(24 * 3600);
+
 pub async fn usd_to_local(iso: &str) -> f64 {
-    let url = "https://api.frankfurter.dev/v1/latest?base=USD";
-    if let Ok(j) = get_json(url, None).await {
-        if let Some(map) = currency::parse_frankfurter(&j) {
-            if let Some(r) = currency::rate_for_iso(Some(&map), iso) {
-                return r;
-            }
+    if let Some((cached_iso, rate, at)) = FX_CACHE.lock().unwrap().as_ref() {
+        if cached_iso == iso && at.elapsed() < FX_TTL {
+            return *rate;
         }
     }
-    currency::rate_for_iso(None, iso).unwrap_or(1.0)
+    let url = "https://api.frankfurter.dev/v1/latest?base=USD";
+    let rate = match get_json(url, None).await {
+        Ok(j) => currency::parse_frankfurter(&j)
+            .and_then(|m| currency::rate_for_iso(Some(&m), iso))
+            .unwrap_or_else(|| currency::rate_for_iso(None, iso).unwrap_or(1.0)),
+        Err(_) => currency::rate_for_iso(None, iso).unwrap_or(1.0),
+    };
+    *FX_CACHE.lock().unwrap() = Some((iso.to_string(), rate, std::time::Instant::now()));
+    rate
 }
 
 /// Updates: SteamDB patch notes RSS + Steam store news.
@@ -252,7 +306,7 @@ pub async fn fetch_updates(lang_cc: &str, lang_l: &str) -> anyhow::Result<Value>
     };
     Ok(json!({
         "ok": !patchnotes.is_empty() || !news.is_empty(),
-        "lang": format!("{lang_cc}"), "cc": lang_cc,
+        "lang": lang_l, "cc": lang_cc,
         "patchnotes": patchnotes, "news": news, "stale": false,
     }))
 }
