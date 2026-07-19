@@ -1,0 +1,55 @@
+AutoTBH_Monitor
+Copyright (c) 2026 RuihanRZhao
+
+This product includes software derived from third-party open-source projects.
+
+================================================================================
+tbh-meter — https://github.com/mad-labs-org/tbh-meter
+================================================================================
+
+The built-in live meter (live DPS / gold / EXP tracking, the read-only Windows
+memory sensor, the IL2CPP object layouts, the game offset table, and the run
+lifecycle model) is a Rust derivative work of `mad-labs-org/tbh-meter`, whose
+original implementation is a Python reader (`tbh-reader.exe`) plus an Electron
+overlay. The functionality has been reimplemented natively in Rust in:
+
+  - src-tauri/src/memory.rs   (process attach + read primitives + IL2CPP layouts)
+  - src-tauri/src/meter.rs    (sampling loop, metrics, run tracking)
+  - data/meter-offsets.json   (IL2CPP + game offsets, enums, calibration seed)
+
+tbh-meter is distributed under the MIT License:
+
+    MIT License
+
+    Copyright (c) mad-labs-org
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+================================================================================
+Other upstream credits
+================================================================================
+
+Pricing / order-book formulas and Steam listing-page parsers were modelled on
+the approaches used by Task Bar Trade Center (MIT) and steam-market-api-v2 (MIT).
+
+Game content (item tables, monster/stage/rune data, localized names, artwork)
+originates from TBH: Task Bar Hero (Tesseract Studio) and the community wiki,
+and remains the property of its respective owners. This project is an
+interoperable, strictly read-only companion and is not affiliated with Valve,
+Tesseract Studio, or the TBH developers.

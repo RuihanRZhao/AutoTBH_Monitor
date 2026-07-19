@@ -2,6 +2,9 @@
 //! then opens the window on it (the Nuxt SPA is served by axum, same origin as /api).
 
 mod currency;
+mod farm;
+mod memory;
+mod meter;
 mod news;
 mod pricing;
 mod save;
@@ -14,23 +17,27 @@ use std::sync::Arc;
 use tauri::Manager;
 
 fn resolve_dirs(app: &tauri::App) -> (PathBuf, PathBuf) {
-    // Prod: bundled under the resource dir. Dev: relative to the crate.
+    // Release: the bundled resource dir is authoritative.
+    // Debug: prefer the live source tree — Tauri's resource copy under target/debug goes stale
+    // as soon as you edit anything in data/, which silently serves outdated files.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let res = app.path().resource_dir().ok();
 
-    let data_dir = res
-        .as_ref()
-        .map(|r| r.join("data"))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| manifest.join("../data"));
+    let src_data = manifest.join("../data");
+    let src_frontend = manifest.join("../frontend/.output/public");
+    let res_data = res.as_ref().map(|r| r.join("data"));
+    let res_frontend = res.as_ref().map(|r| r.join("frontend"));
 
-    let frontend_dir = res
-        .as_ref()
-        .map(|r| r.join("frontend"))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| manifest.join("../frontend/.output/public"));
+    let pick = |src: PathBuf, packaged: Option<PathBuf>| -> PathBuf {
+        let packaged = packaged.filter(|p| p.exists());
+        if cfg!(debug_assertions) && src.exists() {
+            src
+        } else {
+            packaged.unwrap_or(src)
+        }
+    };
 
-    (data_dir, frontend_dir)
+    (pick(src_data, res_data), pick(src_frontend, res_frontend))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,10 +48,19 @@ pub fn run() {
             save::set_data_dir(data_dir.clone());
 
             let initial_currency: u32 = std::env::var("TSM_CURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+
+            // Built-in live meter (DPS / gold / EXP / run tracker). Opt-in: off until enabled.
+            let meter = meter::Meter::new(data_dir.clone());
+            meter.spawn_sampler();
+            if std::env::var("TSM_METER").as_deref() == Ok("1") {
+                meter.set_enabled(true);
+            }
+
             let state = server::AppState {
                 data_dir,
                 frontend_dir,
                 currency: Arc::new(AtomicU32::new(initial_currency)),
+                meter,
             };
 
             // Bind the listener first (so the window can load immediately), then serve in the background.

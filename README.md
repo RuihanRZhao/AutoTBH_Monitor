@@ -1,139 +1,84 @@
 # AutoTBH_Monitor
 
-A **read-only** companion for **TBH: Task Bar Hero**, rebuilt in **Rust + Tauri + Nuxt 4**.
-It reads your local game save (never modifies it), cross-references live Steam Market prices, and
-surfaces a stash valuation, sell desk, market browser, bestiary, crafting, farm calibration, and the
-latest patch notes — all in a native desktop window.
+面向 **TBH: Task Bar Hero** 的**只读**桌面配套工具，基于 **Rust + Tauri + Nuxt 4**。
 
-This is a from-scratch port of the original Electron/Node app: the entire backend is rewritten in Rust
-(an embedded `axum` server), and the entire UI is rewritten in Nuxt 4 with `@nuxtjs/i18n` (16 locales).
+读取本地游戏存档（从不修改），对照 Steam 市场实时价格，在原生窗口中提供仓库估值、出售建议、市场浏览、图鉴、合成、刷图校准与补丁动态等功能。界面支持多语言（含完整简体中文）。
 
-> **Read-only & unaffiliated.** Reads the save file and public Steam Market data only. Not affiliated
-> with Valve, Tesseract Studio, or the TBH developers.
+> **只读且非官方。** 仅读取存档与公开 Steam 市场数据。与 Valve、Tesseract Studio 或 TBH 开发者无关联。
+
+[English](docs/README.en.md) · [架构与功能说明](docs/architecture.md)
 
 ---
 
-## Architecture
+## 主要功能
 
-```
-┌─────────────────────────── Tauri (Rust) desktop shell ───────────────────────────┐
-│                                                                                   │
-│   src-tauri/  ──spawns──►  axum HTTP server @ 127.0.0.1:5260                       │
-│        │                      ├─ /api/*        (Rust port of the Node backend)     │
-│        │                      └─ /* static     (serves the built Nuxt SPA)         │
-│        │                                                                           │
-│        └── WebviewWindow ──loads──►  http://localhost:5260  (same origin as /api)  │
-│                                          ▲                                         │
-│                                   Nuxt 4 SPA (frontend/, generated to static)      │
-└───────────────────────────────────────────────────────────────────────────────────┘
-```
+- **仓库估值** — 读取存档，按 Steam 市价汇总背包与页签
+- **出售台** — 流动性、建议挂单价、手续费与立即出售评分
+- **市场浏览器** — 物品搜索、订单簿、价格历史
+- **图鉴 / 合成 / 符文树** — 离线可用的游戏数据浏览
+- **更新动态** — SteamDB 补丁说明与 Steam 新闻
+- **实时面板（内置）** — 实时 DPS / 金币 / 经验与战斗记录器。功能已**完整并入本项目**，
+  用原生 Rust 重写自 MIT 许可的 [tbh-meter](https://github.com/mad-labs-org/tbh-meter)，
+  **不再需要 Python 或任何外部进程**；严格只读（仅 `ReadProcessMemory`，不写入、不注入）
+- **刷图校准** — 由内置实时面板记录的真实战斗数据驱动
 
-- **`src-tauri/`** — Rust. Tauri shell + embedded `axum` server. One binary, no Node at runtime.
-- **`frontend/`** — Nuxt 4 SPA (`ssr: false`), `@nuxtjs/i18n`, generated to `.output/public` and served
-  by the Rust server. The window loads `http://localhost:5260`, so the UI's `/api/*` calls are same-origin.
-- **`data/`** — bundled game data: item-table + item-name seeds (for the save reader) and engine-derived
-  snapshots (`codex`, `crafting`, `version`, `rune_tree`, `farm_stages`).
-
-### Rust backend modules (`src-tauri/src/`)
-
-| Module | Port of | Responsibility |
-|--------|---------|----------------|
-| `save.rs` | `tbh-save.mjs` | ES3 decrypt (AES-128-CBC + PBKDF2-HMAC-SHA1 + gzip), parse `PlayerSaveData`, aggregate the stash by market hash, read tabs. |
-| `steam.rs` | `server.mjs` (network) | Steam Market: item list, order book, price history, name→hash resolve, Frankfurter FX, Steam news. |
-| `pricing.rs` | `pricing.mjs` | Liquidity, undercut/suggested-list, fee math, history metrics, sell-now score. |
-| `currency.rs` | `currency.mjs` | 41 Steam currencies + FX helpers. |
-| `news.rs` | `news.mjs` | SteamDB patch-notes RSS + Steam news parsing (safe-HTML/BBCode reduction). |
-| `server.rs` | `server.mjs` (routing) | `axum` router mirroring the `/api/*` contract + static SPA serving. |
-| `lib.rs` / `main.rs` | `electron/main.js` | Tauri shell: boot the server, open the window on it. |
+部分能力（Coach、升级推荐等）仍在移植中，详见 [架构与功能说明](docs/architecture.md)。
 
 ---
 
-## Feature / port status
+## 使用说明
 
-| Area | Endpoint(s) | Status |
-|------|-------------|--------|
-| Stash valuation | `/api/stash`, `/api/stash-tabs` | ✅ Rust (ES3 decrypt + market cross-ref) |
-| Market browser | `/api/items` | ✅ Rust (Steam search/render) |
-| Order book / hover / depth | `/api/orderbook`, `/api/hover`, `/api/market-depth` | ✅ Rust |
-| Price history | `/api/pricehistory` | ✅ Rust |
-| Name resolve | `/api/resolve-hash` | ✅ Rust |
-| Currency (41) | `/api/currency` | ✅ Rust |
-| Bestiary / stages | `/api/codex` | ✅ Bundled snapshot |
-| Crafting | `/api/crafting` | ✅ Bundled snapshot |
-| Rune tree (197 nodes) | `/api/rune-tree` | ✅ Bundled data |
-| Updates | `/api/updates` | ✅ Rust (SteamDB + Steam news) |
-| Farm calibration / runs | `/api/farm-calibration`, `/api/runs` | ⚙️ Wired; needs the meter reader's run logs |
-| Coach / Upgrade Finder | `/api/insights`, `/api/upgrades` | 🚧 Depends on the TBH simulation engine — port in progress (see below) |
-| Live DPS meter | `/api/meter` | ⚙️ Reads the reader's `live.json`; reader integration below |
-| i18n (16 locales) | — | ✅ `@nuxtjs/i18n` (English + 简体中文 fully translated; others fall back to English + server-side game-name localization) |
+### 前置条件
 
-### The simulation engine
+- **Rust**（stable，Windows 上使用 MSVC 工具链）
+- **Node 20+**
+- **Tauri v2** 依赖（WebView2；Windows 11 通常已预装）
 
-The original's coach (`/api/insights`) and Upgrade Finder (`/api/upgrades`) are driven by a ~2 MB
-JavaScript game-simulation engine (`engine.js` + `gamedata.js`). Faithfully reproducing party
-DPS/EHP/POWER, farm modeling, rune/gear advising, idle/chest planning, and loot drop tables is a large
-standalone effort. These endpoints currently return a structured `enginePending` marker and the UI
-degrades gracefully. The planned path is to embed the vendored engine via a QuickJS runtime (`rquickjs`)
-so it runs inside the Rust process without a Node dependency, then port hot paths to native Rust.
-
-### Live DPS meter
-
-The live DPS/gold/EXP overlay uses a native memory reader. This project is designed to consume the
-MIT-licensed reader from [mad-labs-org/tbh-meter](https://github.com/mad-labs-org/tbh-meter) (a
-read-only IL2CPP memory sensor): drop its `live.json` output into the app data dir and `/api/meter`
-serves it. The reader itself is not bundled.
-
----
-
-## Develop
-
-Prerequisites: **Rust** (stable, MSVC), **Node 20+**, and the **Tauri v2** prerequisites (WebView2 —
-preinstalled on Windows 11).
+### 本地运行
 
 ```bash
-# 1) Frontend (Nuxt) — install + build the static SPA
+# 1) 构建前端静态资源
 cd frontend
 npm install
 npm run generate         # → frontend/.output/public
 
-# 2) Run the desktop app (from repo root)
+# 2) 启动桌面应用（仓库根目录）
 cd ../src-tauri
-cargo run                # boots axum on :5260 and opens the window
+cargo run                # 在 :5260 启动服务并打开窗口
 
-# Or run the backend headless and open a browser at http://localhost:5260
+# 或以无界面方式运行后端，浏览器访问 http://localhost:5260
 cargo run --bin autotbh-monitor
 ```
 
-### Build the installer
+### 构建安装包
 
 ```bash
-cargo tauri build        # runs `nuxt generate`, compiles Rust, emits an NSIS installer
+cargo tauri build        # 生成前端、编译 Rust，产出 NSIS 安装包
 ```
 
-Output: `src-tauri/target/release/bundle/nsis/*.exe`. CI (`.github/workflows/build.yml`) builds this on
-every push.
+安装包位于 `src-tauri/target/release/bundle/nsis/*.exe`。CI 会在每次推送时构建。
+
+### 环境变量（可选）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `TSM_CURRENCY` | `1`（USD） | 初始 Steam 货币代码 |
+| `TBH_GAME_DIR` | 自动检测 | 游戏目录 `TaskBarHero_Data` 路径 |
+| `TBH_ES3_PASSWORD` | 自动提取 | 强制指定存档解密密钥 |
+| `NUXT_PUBLIC_API_BASE` | `http://localhost:5260` | 前端 API 基址（开发用） |
 
 ---
 
-## Data & i18n
+## 文档
 
-- **Game data** (`data/engine/*.json`) is bundled so the app is useful offline — bestiary, stages,
-  crafting, and the 197-node rune tree render without a network round-trip.
-- **Localized game names** (items/monsters/stages) come from the wiki catalog's 16-language name maps,
-  resolved server-side per request (`?lang=`).
-- **UI chrome** is translated via `@nuxtjs/i18n` in `frontend/i18n.config.ts`.
+| 文档 | 说明 |
+|------|------|
+| [架构与功能说明](docs/architecture.md) | 技术架构、模块划分、接口与移植状态 |
+| [English README](docs/README.en.md) | English project intro & usage |
+| [Architecture (EN)](docs/architecture.en.md) | Architecture & feature status in English |
 
-## Configuration (env)
+---
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `TSM_CURRENCY` | `1` (USD) | Initial Steam currency code. |
-| `TBH_GAME_DIR` | auto-detected | Path to `TaskBarHero_Data` if not on a scanned drive. |
-| `TBH_ES3_PASSWORD` | auto-extracted | Force the save decryption key. |
-| `NUXT_PUBLIC_API_BASE` | `http://localhost:5260` | Backend base URL for the frontend (dev). |
+## 许可证
 
-## License
-
-MIT — see [LICENSE](LICENSE). Bundled game data and localized strings originate from TBH: Task Bar Hero
-and the community wiki and remain the property of their respective owners; this project is an
-interoperable, read-only companion.
+MIT — 见 [LICENSE](LICENSE)。捆绑的游戏数据与本地化字符串源自 TBH: Task Bar Hero 及社区 wiki，仍归其各自所有者所有；本项目为可互操作的只读配套工具。

@@ -8,9 +8,15 @@ export default defineI18nConfig(() => ({
     en: {
       app: { title: 'AutoTBH_Monitor', subtitle: 'Read-only TBH: Task Bar Hero companion' },
       nav: {
-        overview: 'Overview', stash: 'Sell Desk', market: 'Market', farm: 'Farm',
+        overview: 'Overview', stash: 'Sell Desk', market: 'Market', meter: 'Live Meter', farm: 'Farm',
         heroes: 'Heroes', runes: 'Runes', bestiary: 'Bestiary', crafting: 'Crafting',
         updates: 'Updates', settings: 'Settings',
+      },
+      meter: {
+        start: 'Start meter', stop: 'Stop meter', state: 'Reader state',
+        attached: 'Attached to game', detached: 'Game not running', runs: 'Runs',
+        damage: 'Total damage', kills: 'Kills', stage: 'Stage', history: 'Run history',
+        time: 'Time', clear: 'Clear time',
       },
       common: {
         loading: 'Loading…', refresh: 'Refresh', retry: 'Retry', offline: 'Offline',
@@ -29,9 +35,15 @@ export default defineI18nConfig(() => ({
     'zh-Hans': {
       app: { title: 'AutoTBH_Monitor', subtitle: '只读的 TBH: Task Bar Hero 助手' },
       nav: {
-        overview: '总览', stash: '出售台', market: '市场', farm: '刷图',
+        overview: '总览', stash: '出售台', market: '市场', meter: '实时面板', farm: '刷图',
         heroes: '英雄', runes: '符文', bestiary: '图鉴', crafting: '合成',
         updates: '更新', settings: '设置',
+      },
+      meter: {
+        start: '启动面板', stop: '停止面板', state: '读取器状态',
+        attached: '已连接游戏', detached: '游戏未运行', runs: '记录数',
+        damage: '总伤害', kills: '击杀', stage: '关卡', history: '战斗记录',
+        time: '时间', clear: '通关耗时',
       },
       common: {
         loading: '加载中…', refresh: '刷新', retry: '重试', offline: '离线',

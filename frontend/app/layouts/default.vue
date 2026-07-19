@@ -6,6 +6,7 @@ const nav = [
   { to: '/', key: 'overview', ico: '📊' },
   { to: '/stash', key: 'stash', ico: '💰' },
   { to: '/market', key: 'market', ico: '🏷️' },
+  { to: '/meter', key: 'meter', ico: '📈' },
   { to: '/farm', key: 'farm', ico: '⚔️' },
   { to: '/heroes', key: 'heroes', ico: '🦸' },
   { to: '/runes', key: 'runes', ico: '🔮' },

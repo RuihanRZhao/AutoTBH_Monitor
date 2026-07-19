@@ -1,0 +1,7 @@
+{
+  "_comment": "Pointer chains for the built-in live meter (src-tauri/src/meter.rs). Read-only. Functionality absorbed from mad-labs-org/tbh-meter (MIT). Offsets are GAME-BUILD SPECIFIC: each entry is `base` (static offset from GameAssembly.dll's image base) plus a `offsets` pointer walk, where the LAST offset is added without a deref. Re-pin these after a game update — the file is data, not code, so no rebuild is needed. Use `kind` to pick the read width. Leave `fields` empty to run the meter in attach-only mode (it reports `attached: true` and an explanatory error instead of bad numbers).",
+  "schema_version": 1,
+  "process": "TaskBarHero.exe",
+  "module": "GameAssembly.dll",
+  "fields": {}
+}

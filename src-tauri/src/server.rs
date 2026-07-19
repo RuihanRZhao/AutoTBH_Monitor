@@ -1,7 +1,7 @@
 //! Embedded axum HTTP server on 127.0.0.1:5260. Mirrors the `/api/*` contract of the original
 //! Node backend. Serves the bundled Nuxt SPA as the static root (SPA fallback → 200.html).
 
-use crate::{currency, pricing, save, steam};
+use crate::{currency, farm, meter::Meter, pricing, save, steam};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -27,6 +27,7 @@ pub struct AppState {
     pub data_dir: PathBuf,     // bundled seeds + engine snapshots
     pub frontend_dir: PathBuf, // Nuxt .output/public
     pub currency: Arc<AtomicU32>,
+    pub meter: Meter,          // built-in live DPS/gold/EXP + run tracker
 }
 
 type Q = HashMap<String, String>;
@@ -58,6 +59,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/insights", get(h_insights))
         .route("/api/upgrades", get(h_upgrades))
         .route("/api/meter", get(h_meter))
+        .route("/api/meter/status", get(h_meter_status))
+        .route("/api/meter/enable", post(h_meter_enable))
         .route("/api/items", get(h_items))
         .route("/api/orderbook", get(h_orderbook))
         .route("/api/market-depth", get(h_market_depth))
@@ -149,15 +152,24 @@ async fn h_stash_tabs() -> impl IntoResponse {
         Err(e) => Json(json!({ "found": true, "error": e.to_string() })),
     }
 }
-async fn h_farm_calibration() -> impl IntoResponse {
-    // Run logs come from the external meter reader; empty until it writes them.
-    Json(json!({ "ok": true, "stages": [], "primaryDifficulty": Value::Null, "difficulties": [], "totalRuns": 0, "generatedAt": 0 }))
+/// Farm calibration from the built-in meter's recorded runs.
+async fn h_farm_calibration(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let runs = s.meter.inner.lock().unwrap().runs.clone();
+    let mut opts = farm::AggregateOpts::default();
+    if let Some(days) = q.get("days").and_then(|v| v.parse::<f64>().ok()) {
+        if days > 0.0 { opts.max_age_ms = days * 86_400_000.0; }
+    }
+    Json(farm::aggregate_runs_for_farm(&runs, &opts))
 }
-async fn h_runs() -> impl IntoResponse {
-    Json(json!({ "ok": true, "runs": [] }))
+async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
+    Json(s.meter.runs_json())
 }
-async fn h_runs_reset() -> impl IntoResponse {
-    Json(json!({ "ok": true, "archived": 0, "total": 0 }))
+async fn h_runs_reset(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    // Guard: require ?confirm=1 (archives rather than deletes).
+    if q.get("confirm").map(|v| v.as_str()) != Some("1") {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": "POST with ?confirm=1 required" }))).into_response();
+    }
+    Json(s.meter.reset_runs()).into_response()
 }
 
 // ── Engine-dependent (the 2 MB JS game engine is not yet ported to Rust) ─────
@@ -173,12 +185,17 @@ async fn h_insights() -> impl IntoResponse { Json(engine_pending("insights")) }
 async fn h_upgrades() -> impl IntoResponse {
     Json(json!({ "found": save::save_exists(), "enginePending": true, "slots": [] }))
 }
+// ── Built-in live meter (absorbed from mad-labs-org/tbh-meter, MIT) ─────────
 async fn h_meter(State(s): State<AppState>) -> impl IntoResponse {
-    let live = s.data_dir.join("meter/live.json");
-    match std::fs::read_to_string(live) {
-        Ok(t) => Json(json!({ "ok": true, "live": serde_json::from_str::<Value>(&t).unwrap_or(Value::Null) })),
-        Err(_) => Json(json!({ "ok": false })),
-    }
+    Json(s.meter.live_json())
+}
+async fn h_meter_status(State(s): State<AppState>) -> impl IntoResponse {
+    Json(s.meter.status())
+}
+async fn h_meter_enable(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let on = q.get("on").map(|v| v == "1" || v == "true").unwrap_or(true);
+    s.meter.set_enabled(on);
+    Json(s.meter.status())
 }
 
 // ── Steam network endpoints ─────────────────────────────────────────────────
