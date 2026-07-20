@@ -95,5 +95,33 @@
     "predictedTravelIncreasePct_inverseSpeedModel": 4.9,
     "observedTravelIncreasePct": 11.4,
     "status": "direction_confirmed_magnitude_unverified"
+  },
+
+  "clearTimeGroundTruth": {
+    "_comment": [
+      "Clear time no longer needs to be inferred at all: StageClearLog.CLEAR_TIME is the game's",
+      "own computed clear time (integer seconds), read straight from LogManager.LOG_LIST. This",
+      "replaced our meter's earlier heuristic (RunRecord cut on 'monster list went empty'), which",
+      "silently fragmented one real clear into dozens of bogus few-second records -- the gap",
+      "between waves (~0.9-1s, many times per clear) also empties the monster list.",
+      "",
+      "Stage 1301's clear time is now confirmed identically from THREE independent sources:",
+      "  1. Archived original-app runs (17 full clears, filtered mobsKilled==totalMobs): 167s median",
+      "  2. Direct single-shot read of live StageClearLog entries: 161-169s across ~8 samples",
+      "  3. Fixed live run tracker, 5 fresh clears via LogManager: 161-171s, 164s median",
+      "None of this required curve-fitting or inference -- (2) and (3) are the game's own numbers.",
+      "",
+      "Going forward, prefer live LogManager-sourced runs.json over the archived original-app data",
+      "for any recalibration: it is game-authoritative (act/stage/clearTime come from the game,",
+      "not from watching HP/monster-list state), and it accumulates automatically while the meter",
+      "is enabled. The clearModel fit above still used the archived data because it predates this",
+      "fix; refit against LogManager-sourced runs once enough accumulate, especially for the",
+      "movement-speed decomposition above, which needs multiple controlled speed levels."
+    ],
+    "stage1301ClearSecSamples": {
+      "archivedOriginalApp": { "n": 17, "median": 167 },
+      "liveLogManagerSpotCheck": { "n": 8, "range": [161, 169] },
+      "liveRunTrackerAfterFix": { "n": 5, "median": 164, "range": [161, 171] }
+    }
   }
 }

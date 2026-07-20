@@ -125,7 +125,18 @@ pub struct MeterInner {
     last_alive: i64,
     run_start_ts: Option<f64>,
     run_start_gold: Option<i64>,
-    run_stage: Option<i64>,
+    /// Object addresses of the last-seen tail of LogManager.LOG_LIST, oldest first. Identity
+    /// (the heap address of each log entry object), NOT array length or index, is what marks an
+    /// entry as "already processed" — the list is capped at 2000 by the game itself (confirmed
+    /// live: length stays flat at exactly 2000 even as new entries keep appearing), which the
+    /// game maintains by dropping old entries as new ones append. A length/index comparison goes
+    /// silently blind forever once a save crosses that cap; comparing which addresses are new to
+    /// the tail keeps working regardless of how the underlying array is shuffled.
+    log_tail: Vec<usize>,
+    /// True once `log_tail` has been seeded from a live read. Guards against treating the game's
+    /// entire log HISTORY as "new" on the first tick after attach — only entries that appear
+    /// after we start watching become RunRecords.
+    log_seeded: bool,
 }
 
 #[derive(Clone)]
@@ -455,6 +466,158 @@ impl Meter {
         Err("memory reading is Windows-only".into())
     }
 
+    /// Walk the live IL2CPP TypeInfoTable and return every class whose name contains one of
+    /// `needles` (case-insensitive). Read-only: this only follows the type table the running
+    /// process already has resident (`class_by_type_index` / `class_name`), the same primitive
+    /// used everywhere else in this module — no metadata file parsing, no injection.
+    ///
+    /// Exists to go from "a string in global-metadata.dat looks relevant" (static analysis) to
+    /// "here is the live class, ready to resolve fields against" (the one thing static analysis
+    /// alone cannot give us, since global-metadata.dat's own field-layout parsing is a large,
+    /// version-sensitive undertaking better avoided when this shortcut is available).
+    #[cfg(windows)]
+    pub fn scan_classes(&self, needles: &[String], max_index: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+
+        let needles_lower: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
+        let mut hits = Vec::new();
+        let mut scanned = 0usize;
+        for idx in 0..max_index {
+            let Ok(k) = proc.class_by_type_index(calib.anchor_rva, idx) else { continue };
+            scanned += 1;
+            let Some(name) = proc.class_name(k) else { continue };
+            let nl = name.to_lowercase();
+            if needles_lower.iter().any(|n| nl.contains(n.as_str())) {
+                hits.push(json!({ "typeIndex": idx, "name": name }));
+            }
+        }
+        Ok(json!({ "ok": true, "scanned": scanned, "maxIndex": max_index, "matches": hits }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn scan_classes(&self, _needles: &[String], _max_index: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
+    /// Heap-scan for live instances of `type_index` and dump each one's first `window` bytes,
+    /// interpreted as both f32 and i32 at every 4-byte offset. Read-only (find_instances +
+    /// read_bytes only). Meant for eyeballing an unknown class's field layout by magnitude —
+    /// e.g. a spawn-delay field should read as a small positive float, an offset-count field as
+    /// a small positive int — not for anything that needs the field's *name* (that would require
+    /// parsing global-metadata.dat's field table, which this sidesteps).
+    #[cfg(windows)]
+    pub fn dump_instances(&self, type_index: usize, limit: usize, window: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let klass = proc.class_by_type_index(calib.anchor_rva, type_index).map_err(|e| e.to_string())?;
+        let name = proc.class_name(klass);
+
+        let instances = proc.find_instances(klass, limit);
+        let mut dumps = Vec::new();
+        for addr in &instances {
+            let buf = proc.read_bytes(*addr, window).unwrap_or_default();
+            let mut fields = Vec::new();
+            for off in (0..buf.len().saturating_sub(3)).step_by(4) {
+                let b: [u8; 4] = buf[off..off + 4].try_into().unwrap();
+                let f = f32::from_le_bytes(b);
+                let i = i32::from_le_bytes(b);
+                fields.push(json!({ "off": format!("0x{off:x}"), "f32": f, "i32": i }));
+            }
+            dumps.push(json!({ "addr": format!("0x{addr:x}"), "fields": fields }));
+        }
+        Ok(json!({ "ok": true, "class": name, "typeIndex": type_index, "instanceCount": instances.len(), "instances": dumps }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn dump_instances(&self, _type_index: usize, _limit: usize, _window: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
+    /// Read `LogManager.LOG_LIST` and decode each entry's authoritative game-side record —
+    /// `StageClearLog` (ACT/STAGE/CLEAR_TIME/IS_BOSS) or `StageFailedLog`
+    /// (ACT/STAGE/NOW_WAVE/TOTAL_WAVE/IS_ACT_BOSS) — by reading the entry's own class name off
+    /// its vtable, the same technique used everywhere else in this module.
+    ///
+    /// This is the fix for a real bug in the run tracker: `sample_once` inferred "stage cleared"
+    /// from the monster list going empty, but a normal inter-wave gap (measured at ~0.9-1s, many
+    /// times per stage) also empties the list, so a single clear was getting fragmented into many
+    /// bogus few-second "success" records. `CLEAR_TIME` here is computed by the game itself —
+    /// no inference needed, no gap to misread.
+    #[cfg(windows)]
+    pub fn read_stage_logs(&self, limit: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let g = |c: &str, f: &str| cfg.game_off(c, f);
+
+        let i = calib.indices.get("LogManager").cloned().ok_or("no LogManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, i).map_err(|e| e.to_string())?;
+        let lm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let list = proc.read_ptr(lm + g("LogManager", "LOG_LIST")).unwrap_or(0);
+        let entries = proc.list_ptrs(list, limit as i32).unwrap_or_default();
+
+        let mut clears = Vec::new();
+        let mut fails = Vec::new();
+        let mut other = HashMap::new();
+        for e in &entries {
+            let cls = proc.read_ptr(*e).unwrap_or(0);
+            let name = proc.class_name(cls).unwrap_or_default();
+            match name.as_str() {
+                "StageClearLog" => {
+                    let ct_off = e + g("StageClearLog", "CLEAR_TIME");
+                    clears.push(json!({
+                        "act": proc.read_i32(e + g("StageClearLog", "ACT")).ok(),
+                        "stage": proc.read_i32(e + g("StageClearLog", "STAGE")).ok(),
+                        "clearTimeF32": proc.read_f32(ct_off).ok(),
+                        "clearTimeI32": proc.read_i32(ct_off).ok(),
+                        "clearTimeI64": proc.read_i64(ct_off).ok(),
+                        // ±4 bytes either side, in case CLEAR_TIME's real offset is off by a word
+                        // (a wrong-but-close offset is a common failure mode elsewhere in this file).
+                        "neighboursF32": (-8i64..=8).step_by(4).map(|d| proc.read_f32((ct_off as i64 + d) as usize).ok()).collect::<Vec<_>>(),
+                        "isBoss": proc.read_i32(e + g("StageClearLog", "IS_BOSS")).ok(),
+                    }));
+                }
+                "StageFailedLog" => fails.push(json!({
+                    "act": proc.read_i32(e + g("StageFailedLog", "ACT")).ok(),
+                    "stage": proc.read_i32(e + g("StageFailedLog", "STAGE")).ok(),
+                    "nowWave": proc.read_i32(e + g("StageFailedLog", "NOW_WAVE")).ok(),
+                    "totalWave": proc.read_i32(e + g("StageFailedLog", "TOTAL_WAVE")).ok(),
+                })),
+                _ => { *other.entry(name).or_insert(0) += 1; }
+            }
+        }
+        Ok(json!({
+            "ok": true, "totalEntries": entries.len(),
+            "clears": clears, "fails": fails,
+            "otherTypes": other,
+        }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn read_stage_logs(&self, _limit: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
 
     /// Dump live monsters' current/max HP straight from the game.
     /// Settles whether a stage table's totalHP is on the same scale as what the game actually
@@ -875,6 +1038,66 @@ impl Meter {
             }
         }
 
+        // ── authoritative run boundaries: LogManager.LOG_LIST ──────────────
+        // Peek the previous tail snapshot (no lock held across the memory reads below — this
+        // thread is the only writer, so a stale read here just means we redecode a couple of
+        // already-seen entries next tick, never lose or duplicate a record).
+        let (log_tail_before, log_seeded_before) = {
+            let g = self.inner.lock().unwrap();
+            (g.log_tail.clone(), g.log_seeded)
+        };
+        const LOG_TAIL_WINDOW: usize = 64;
+        let mut new_clears: Vec<(i64, i64)> = Vec::new(); // (stageKey, clearTimeSec)
+        let mut new_fails = 0usize;
+        let mut log_tail_now: Vec<usize> = Vec::new();
+        if let Some(i) = idx("LogManager") {
+            if let Ok(k) = proc.class_by_type_index(calib.anchor_rva, i) {
+                if let Ok(lm) = proc.singleton_instance(k) {
+                    let list = proc.read_ptr(lm + g_off("LogManager", "LOG_LIST")).unwrap_or(0);
+                    if let Ok((items, size)) = proc.read_il2cpp_list(list) {
+                        if items != 0 && size > 0 {
+                            let size = size as usize;
+                            let start_i = size.saturating_sub(LOG_TAIL_WINDOW);
+                            let seen_before: std::collections::HashSet<usize> =
+                                log_tail_before.iter().copied().collect();
+                            for slot in start_i..size {
+                                let e = proc.read_ptr(proc.il2cpp_array_data(items) + slot * 8).unwrap_or(0);
+                                if e == 0 { continue; }
+                                log_tail_now.push(e);
+                                // Only decode entries genuinely new to the tail, and only once we
+                                // have a real baseline — decoding the whole backlog on first
+                                // attach would replay the game's entire history as if it just
+                                // happened. `seen_before` (not index/length) is what makes this
+                                // correct across the game's own 2000-entry cap: once hit, the
+                                // array shifts and length stops changing, so a length comparison
+                                // would go silently blind forever, but each entry's own heap
+                                // address stays stable regardless of its slot.
+                                if !log_seeded_before || seen_before.contains(&e) { continue; }
+                                let cls = proc.read_ptr(e).unwrap_or(0);
+                                let name = proc.class_name(cls).unwrap_or_default();
+                                match name.as_str() {
+                                    "StageClearLog" => {
+                                        let act = proc.read_i32(e + g_off("StageClearLog", "ACT")).unwrap_or(0) as i64;
+                                        let stage = proc.read_i32(e + g_off("StageClearLog", "STAGE")).unwrap_or(0) as i64;
+                                        // CLEAR_TIME is an i32 (whole seconds) — reading it as f32
+                                        // decodes small integer bit patterns as denormalised
+                                        // floats (~1e-43), which is how this was first misread.
+                                        let ct = proc.read_i32(e + g_off("StageClearLog", "CLEAR_TIME")).unwrap_or(0) as i64;
+                                        if act > 0 && stage > 0 && ct > 0 {
+                                            // key = 1000 + act*100 + stageNo, matching farm_stages.json
+                                            new_clears.push((1000 + act * 100 + stage, ct));
+                                        }
+                                    }
+                                    "StageFailedLog" => new_fails += 1,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── fold into state ─────────────────────────────────────────────────
         let ts = now_ms();
         let mut g = self.inner.lock().unwrap();
@@ -895,50 +1118,58 @@ impl Meter {
         }
         g.last_hp = current;
 
-        // Run lifecycle is resolved BEFORE folding this tick's damage in, so the opening tick's
-        // damage lands in the new run instead of being wiped by the reset (and a stage change
-        // closes the old run and opens the new one on the same tick, losing nothing).
+        // `run_start_ts` is now ONLY a live-display "how long has combat been continuous"
+        // ticker — it no longer decides when a RunRecord gets written. That decision comes
+        // entirely from the log-tail decoded above, which is the game's own record of what
+        // happened, not our inference from watching the monster list.
         let in_combat = alive > 0;
-        let stage_changed = stage_key.is_some() && g.run_stage.is_some() && stage_key != g.run_stage;
         let mut runs_changed = false;
 
-        if g.run_start_ts.is_some() && (!in_combat || stage_changed) {
-            let start = g.run_start_ts.take().unwrap();
-            let g0 = g.run_start_gold.take();
-            let stage = g.run_stage.take();
-            let clear = (ts - start) / 1000.0;
-            let total_damage = g.total_damage;
-            if clear >= 3.0 && total_damage > 0.0 {
+        if !g.log_seeded {
+            // First observation: adopt the current tail as the baseline without emitting
+            // anything for it — those entries happened before this process started watching.
+            g.log_tail = log_tail_now;
+            g.log_seeded = true;
+            g.run_start_gold = gold;
+        } else {
+            for (stage_key, clear_sec) in &new_clears {
                 let rec = RunRecord {
                     ts,
                     outcome: "success".into(),
-                    stage_key: stage,
+                    stage_key: Some(*stage_key),
                     difficulty: None,
-                    clear_time: Some(clear),
-                    total_damage: Some(total_damage),
-                    // never emit 0 for an unread value
-                    gold: match (gold, g0) { (Some(a), Some(b)) if a >= b => Some((a - b) as f64), _ => None },
+                    clear_time: Some(*clear_sec as f64),
+                    total_damage: Some(g.total_damage),
+                    gold: match (gold, g.run_start_gold) {
+                        (Some(a), Some(b)) if a >= b => Some((a - b) as f64),
+                        _ => None,
+                    },
                     xp: None,
                 };
                 g.runs.push(rec);
-                if g.runs.len() > 2000 { let n = g.runs.len() - 2000; g.runs.drain(0..n); }
                 runs_changed = true;
+                g.total_damage = 0.0;
+                g.kills = 0;
+                g.window.clear();
+                g.run_start_gold = gold;
             }
-            g.total_damage = 0.0;
-            g.kills = 0;
-            g.window.clear();
+            // Failed attempts still end the accumulation window; not recorded as a RunRecord
+            // yet (farm.rs's aggregator only wants "success", and a fail schema — which wave was
+            // reached, etc. — is future scope, not needed to fix the fragmentation bug).
+            if new_fails > 0 {
+                g.total_damage = 0.0;
+                g.kills = 0;
+                g.window.clear();
+                g.run_start_gold = gold;
+            }
+            if !log_tail_now.is_empty() { g.log_tail = log_tail_now; }
+            if g.runs.len() > 2000 { let n = g.runs.len() - 2000; g.runs.drain(0..n); }
         }
-        // Not `else if`: a stage change closes and reopens within the same tick.
         if in_combat && g.run_start_ts.is_none() {
             g.run_start_ts = Some(ts);
-            g.run_start_gold = gold;
-            g.run_stage = stage_key;
-            g.total_damage = 0.0;
-            g.kills = 0;
-            g.window.clear();
         }
-        if stage_key.is_some() && g.run_start_ts.is_some() && g.run_stage.is_none() {
-            g.run_stage = stage_key;
+        if !in_combat {
+            g.run_start_ts = None;
         }
 
         if damage_this_tick > 0.0 {

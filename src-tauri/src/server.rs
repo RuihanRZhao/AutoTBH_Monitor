@@ -101,6 +101,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/debug/findrecord", get(h_debug_findrecord))
         .route("/api/debug/modifiers", get(h_debug_modifiers))
         .route("/api/debug/monsterhp", get(h_debug_monsterhp))
+        .route("/api/debug/classscan", get(h_debug_classscan))
+        .route("/api/debug/instancedump", get(h_debug_instancedump))
+        .route("/api/debug/stagelogs", get(h_debug_stagelogs))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -513,6 +516,43 @@ async fn h_debug_modifiers(State(s): State<AppState>, Query(q): Query<Q>) -> imp
 
 async fn h_debug_monsterhp(State(s): State<AppState>) -> impl IntoResponse {
     match s.meter.probe_monster_hp() {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+/// Live TypeInfoTable scan for classes whose name contains any of `q=needle1,needle2,...`.
+/// Used to go from a global-metadata.dat string-scan hit to a live, resolvable class.
+async fn h_debug_classscan(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let needles: Vec<String> = q.get("q").map(|v| v.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+    if needles.is_empty() {
+        return Json(json!({ "ok": false, "error": "missing ?q=needle1,needle2" }));
+    }
+    let max_index: usize = q.get("max").and_then(|v| v.parse().ok()).unwrap_or(60_000);
+    match s.meter.scan_classes(&needles, max_index) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+/// Dump live instances of `?type=<typeIndex>` (from /api/debug/classscan) as raw f32/i32 fields,
+/// for eyeballing an unknown class's layout by value magnitude.
+async fn h_debug_instancedump(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let Some(ty) = q.get("type").and_then(|v| v.parse::<usize>().ok()) else {
+        return Json(json!({ "ok": false, "error": "missing ?type=<typeIndex>" }));
+    };
+    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5);
+    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(128);
+    match s.meter.dump_instances(ty, limit, window) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+/// Game-authoritative stage-clear/fail log, straight from LogManager.LOG_LIST.
+async fn h_debug_stagelogs(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(2000);
+    match s.meter.read_stage_logs(limit) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
     }
