@@ -451,7 +451,7 @@ async fn h_gear_lines(State(s): State<AppState>) -> impl IntoResponse {
     if !save::save_exists() {
         return Json(json!({ "ok": false, "error": "save not found" }));
     }
-    match crate::gearstats::build(&s.data_dir).await {
+    match crate::gearstats::build(&s.data_dir, &s.meter).await {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }

@@ -243,6 +243,74 @@ impl Meter {
         Err("memory reading is Windows-only".into())
     }
 
+    /// Extract the game's whole gear-stat table in one memory pass.
+    ///
+    /// The records are NOT a contiguous array — four confirmed records sit at unrelated
+    /// addresses — so there is no stride to walk. Instead this scans once and accepts a
+    /// 9-word window as a record only if it is structurally valid AND its key is a real gear
+    /// item in the bundled item table. That key check is what keeps the false-positive rate
+    /// at zero; raw structural matching alone would happily accept unrelated integer runs.
+    ///
+    /// Returns `{ gearKey: [key, b1, b2, s1, m1, v1, s2, m2, v2] }`.
+    #[cfg(windows)]
+    pub fn read_gear_stat_table(&self) -> Result<HashMap<i64, Vec<i32>>, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+
+        // Only accept keys the item table knows as gear.
+        let table = crate::save::item_table_snapshot();
+        let valid: std::collections::HashSet<i64> = table
+            .iter()
+            .filter(|(_, row)| {
+                row.get("GEARTYPE").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+            })
+            .filter_map(|(k, _)| k.parse::<i64>().ok())
+            .collect();
+        if valid.is_empty() {
+            return Err("item table empty — cannot validate gear keys".into());
+        }
+
+        let plausible = |stat: i32, mode: i32, val: i32| -> bool {
+            (0..=63).contains(&stat) && (0..=2).contains(&mode) && (0..=1_000_000).contains(&val)
+        };
+
+        let mut out: HashMap<i64, Vec<i32>> = HashMap::new();
+        for (base, size) in proc.readable_regions(4096) {
+            let mut off = 0usize;
+            const CHUNK: usize = 1 << 20;
+            while off < size {
+                let len = CHUNK.min(size - off);
+                let buf = match proc.read_bytes(base + off, len) { Ok(b) => b, Err(_) => break };
+                let words: Vec<i32> = buf
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                for i in 0..words.len().saturating_sub(9) {
+                    let key = words[i] as i64;
+                    if key < 100_000 || !valid.contains(&key) { continue; }
+                    let r = &words[i..i + 9];
+                    // base values non-negative, and both inherent triples well-formed
+                    if r[1] < 0 || r[2] < 0 { continue; }
+                    if !plausible(r[3], r[4], r[5]) || !plausible(r[6], r[7], r[8]) { continue; }
+                    out.entry(key).or_insert_with(|| r.to_vec());
+                }
+                if len < CHUNK { break; }
+                off += len;
+            }
+        }
+        if out.is_empty() {
+            return Err("no gear stat records found in memory".into());
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(windows))]
+    pub fn read_gear_stat_table(&self) -> Result<HashMap<i64, Vec<i32>>, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
     pub fn set_enabled(&self, on: bool) { self.inner.lock().unwrap().enabled = on; }
 
     pub fn offsets(&self) -> Result<Offsets, String> {

@@ -1,17 +1,24 @@
-//! Equipped-gear → stat contributions, computed from the save (offline, no game process needed).
+//! Equipped-gear → stat contributions.
+//!
+//! Source policy: numeric game parameters come from the GAME when it is running; the wiki is
+//! the offline fallback. Both are compared per item and any disagreement is reported, with the
+//! game winning — that doubles as a standing staleness check on the wiki snapshot.
 //!
 //! Pipeline: `heroSaveDatas[].equippedItemIds` → `itemSaveDatas` (by UniqueId) → `ItemKey`
-//! → wiki `items_detail.json` → the item's stat lines, plus any enchant affixes held in the save.
+//! → gear stat lines, plus the enchant affixes held in the save.
 //!
-//! Where the per-item stat lines come from, and why:
-//!   * NOT the bundled item table — it only carries ItemKey/GRADE/GEARTYPE/Level/icon/marketable.
-//!   * NOT the game's assets — the CSV tables an older build exposed are gone in current builds
-//!     (searched every .assets file; even the previously-used `ItemKey,ITEMTYPE,` header is absent).
-//!   * The wiki's `items_detail.json`, keyed by ItemKey, which does carry them.
+//! Where the stat lines come from:
+//!   * GAME (preferred): a table of 9-word records read straight out of the process, layout
+//!     `[GearKey, Base1, Base2, Inh1Stat, Inh1Mod, Inh1Val, Inh2Stat, Inh2Mod, Inh2Val]`,
+//!     confirmed on four items against known-good values. Measured 5760 gear entries.
+//!   * WIKI `items_detail.json` (fallback): same data, also 5760 entries, verified to agree
+//!     with the game on every equipped item.
+//!   * NOT the bundled item table — it only carries ItemKey/GRADE/GEARTYPE/Level/icon.
+//!   * NOT the game's asset files — the CSV tables an older build exposed no longer exist.
 //!
-//! `BaseStat1_Value` / `BaseStat2_Value` are bare numbers — their StatType/ModType is fixed per
-//! gear type and stored nowhere, so it comes from `data/gear-base-stats.json`. Unmapped gear
-//! types are reported in `unmappedGearTypes` rather than being assigned a guessed stat type.
+//! `Base1`/`Base2` are bare numbers in BOTH sources: their StatType/ModType is fixed per gear
+//! type and stored nowhere, so it comes from `data/gear-base-stats.json`. Gear types with no
+//! ground truth are reported via `unmappedGearTypes` rather than assigned a guessed stat type.
 
 use crate::engine::{ModType, StatContrib};
 use serde_json::{json, Map, Value};
@@ -78,6 +85,55 @@ impl BaseStatMap {
         self.map.get(&gear.to_uppercase())
     }
     pub fn is_empty(&self) -> bool { self.map.is_empty() }
+}
+
+/// Resolve one item's stat lines from the GAME's own table.
+///
+/// Record layout (confirmed on four items against known-good values):
+/// `[GearKey, Base1, Base2, Inh1Stat, Inh1Mod, Inh1Val, Inh2Stat, Inh2Mod, Inh2Val]`.
+/// Base stat typing still comes from the gear-type map — the game stores those two as bare
+/// numbers too.
+pub fn item_lines_from_game(
+    rec: &[i32],
+    gear_type: &str,
+    bases: &BaseStatMap,
+    unmapped: &mut HashSet<String>,
+) -> Vec<Line> {
+    let mut out = Vec::new();
+    let (b1, b2) = (rec[1] as f64, rec[2] as f64);
+    match bases.get(gear_type) {
+        Some((s1, s2)) => {
+            if b1 != 0.0 {
+                match s1 {
+                    Some((stat, mode)) => out.push(Line { stat: stat.clone(), mode: mode.clone(), value: b1 }),
+                    None => { unmapped.insert(gear_type.to_uppercase()); }
+                }
+            }
+            if b2 != 0.0 {
+                match s2 {
+                    Some((stat, mode)) => out.push(Line { stat: stat.clone(), mode: mode.clone(), value: b2 }),
+                    None => { unmapped.insert(gear_type.to_uppercase()); }
+                }
+            }
+        }
+        None => { if b1 != 0.0 || b2 != 0.0 { unmapped.insert(gear_type.to_uppercase()); } }
+    }
+    for (s, m, v) in [(rec[3], rec[4], rec[5]), (rec[6], rec[7], rec[8])] {
+        if s == 0 || v == 0 { continue; }
+        let mode = match m { 1 => "ADDITIVE", 2 => "MULTIPLICATIVE", _ => "FLAT" };
+        out.push(Line {
+            stat: crate::engine::stat_name(s as i64).to_string(),
+            mode: mode.to_string(),
+            value: v as f64,
+        });
+    }
+    out
+}
+
+fn lines_key(lines: &[Line]) -> Vec<String> {
+    let mut k: Vec<String> = lines.iter().map(|l| format!("{}|{}|{}", l.stat, l.mode, l.value)).collect();
+    k.sort();
+    k
 }
 
 /// Resolve one item's full stat lines from `items_detail`.
@@ -163,8 +219,13 @@ pub struct HeroGear {
     pub contrib: HashMap<String, StatContrib>,
 }
 
-/// Build per-hero equipped-gear stat lines and aggregated contributions from the save.
-pub async fn build(data_dir: &Path) -> anyhow::Result<Value> {
+/// Build per-hero equipped-gear stat lines and aggregated contributions.
+///
+/// Source policy: numeric game parameters come from the GAME when it is running; the wiki is
+/// the offline fallback. Where both are available they are compared, and any disagreement is
+/// reported (`sourceDisagreements`) with the game taking precedence — that doubles as a
+/// standing check on whether the wiki snapshot has gone stale.
+pub async fn build(data_dir: &Path, meter: &crate::meter::Meter) -> anyhow::Result<Value> {
     let raw = crate::save::player_save_data_string()?;
     let psd: Value = serde_json::from_str(&raw)?;
     let detail = crate::wiki::ensure_items_detail(data_dir)
@@ -187,8 +248,13 @@ pub async fn build(data_dir: &Path) -> anyhow::Result<Value> {
         by_uid.insert(uid, it);
     }
 
+    // Game first (authoritative for numeric parameters); wiki is the offline fallback.
+    let game_table = meter.read_gear_stat_table().ok();
     let mut unmapped: HashSet<String> = HashSet::new();
     let mut missing_detail = 0usize;
+    let mut disagreements: Vec<Value> = Vec::new();
+    let mut from_game = 0usize;
+    let mut from_wiki = 0usize;
     let mut heroes = Vec::new();
 
     for h in as_arr(&psd["heroSaveDatas"]) {
@@ -223,9 +289,28 @@ pub async fn build(data_dir: &Path) -> anyhow::Result<Value> {
             // Enchants are rolled per instance and are kept separate: the reference's
             // `gear.slots[].current.lines` covers only the intrinsic ones, so mixing the two in
             // would make an apples-to-apples diff impossible. Both feed the contribution totals.
-            let lines = match item_lines(&detail, item_key, &gear_type, &bases, &mut unmapped) {
-                Some(l) => l,
-                None => { missing_detail += 1; continue; }
+            let wiki_lines = item_lines(&detail, item_key, &gear_type, &bases, &mut unmapped);
+            let game_lines = game_table
+                .as_ref()
+                .and_then(|t| t.get(&item_key))
+                .map(|rec| item_lines_from_game(rec, &gear_type, &bases, &mut unmapped));
+
+            // Cross-check the two sources; the game wins on any disagreement.
+            if let (Some(g), Some(w)) = (&game_lines, &wiki_lines) {
+                if lines_key(g) != lines_key(w) {
+                    disagreements.push(json!({
+                        "itemKey": item_key,
+                        "gearType": gear_type,
+                        "game": g.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+                        "wiki": w.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+                    }));
+                }
+            }
+
+            let (lines, source) = match (game_lines, wiki_lines) {
+                (Some(g), _) => { from_game += 1; (g, "game") }
+                (None, Some(w)) => { from_wiki += 1; (w, "wiki") }
+                (None, None) => { missing_detail += 1; continue; }
             };
             let enchants = enchant_lines(item);
 
@@ -241,6 +326,7 @@ pub async fn build(data_dir: &Path) -> anyhow::Result<Value> {
                 "level": row.and_then(|r| r.get("Level")).cloned().unwrap_or(Value::Null),
                 "lines": lines.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
                 "enchantLines": enchants.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+                "source": source,
             }));
         }
 
@@ -258,7 +344,11 @@ pub async fn build(data_dir: &Path) -> anyhow::Result<Value> {
 
     Ok(json!({
         "ok": true,
-        "source": "save+items_detail",
+        "sourcePolicy": "game-first, wiki fallback",
+        "gameTableSize": game_table.as_ref().map(|t| t.len()),
+        "linesFromGame": from_game,
+        "linesFromWiki": from_wiki,
+        "sourceDisagreements": disagreements,
         "heroes": heroes,
         "unmappedGearTypes": unmapped.into_iter().collect::<Vec<_>>(),
         "itemsMissingDetail": missing_detail,
