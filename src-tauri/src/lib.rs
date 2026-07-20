@@ -4,6 +4,7 @@
 mod currency;
 mod engine;
 mod farm;
+mod gearstats;
 mod insights;
 mod memory;
 mod meter;

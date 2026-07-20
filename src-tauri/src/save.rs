@@ -181,6 +181,12 @@ fn item_names() -> &'static HashMap<String, String> {
     })
 }
 
+/// Read-only view of the bundled item table (ItemKey → row), for callers that need
+/// GEARTYPE/GRADE/Level without going through a stash read.
+pub fn item_table_snapshot() -> &'static HashMap<String, Value> {
+    item_table()
+}
+
 fn name_from_name_key(row: &Value, names: &HashMap<String, String>) -> Option<String> {
     let key = vstr(row, "ItemKey");
     if let Some(n) = names.get(&key) { return Some(n.clone()); }

@@ -265,6 +265,38 @@ pub async fn ensure_catalog(data_dir: &Path) -> Option<Arc<Catalog>> {
     Some(arc)
 }
 
+// ── items_detail.json: per-ItemKey base + inherent stat lines ───────────────
+static DETAIL: Lazy<Mutex<Option<Arc<Value>>>> = Lazy::new(|| Mutex::new(None));
+
+fn detail_path(data_dir: &Path) -> PathBuf { data_dir.join("wiki/items_detail.json") }
+
+/// Fetch (or load from disk) the wiki's `items_detail.json`, keyed by ItemKey. Carries each
+/// gear item's `BaseStat1/2_Value` and `InherentStat1..3_{STATTYPE,MODTYPE,Value}` — the only
+/// source for exact per-item stat lines (they are NOT in the bundled item table, and the game's
+/// own asset CSVs no longer exist in current builds).
+pub async fn ensure_items_detail(data_dir: &Path) -> Option<Arc<Value>> {
+    if let Some(d) = DETAIL.lock().unwrap().clone() {
+        return Some(d);
+    }
+    let path = detail_path(data_dir);
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+            if v.is_object() {
+                let arc = Arc::new(v);
+                *DETAIL.lock().unwrap() = Some(arc.clone());
+                return Some(arc);
+            }
+        }
+    }
+    let v = fetch_json(&format!("{WIKI_BASE}/data/items_detail.json")).await.ok()?;
+    if !v.is_object() { return None; }
+    if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
+    if let Ok(s) = serde_json::to_string(&v) { let _ = std::fs::write(&path, s); }
+    let arc = Arc::new(v);
+    *DETAIL.lock().unwrap() = Some(arc.clone());
+    Some(arc)
+}
+
 /// Merge wiki enrichment into a list of items that carry a `hash` (or `name`) field.
 /// Bundled names win; the wiki only fills gaps and adds icons/colours/links.
 pub fn enrich_items(cat: &Catalog, items: &mut [Value], lang: &str) {

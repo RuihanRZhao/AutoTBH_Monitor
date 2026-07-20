@@ -1,0 +1,35 @@
+{
+  "_comment": "GEARTYPE → the StatType/ModType of BaseStat1_Value / BaseStat2_Value in the wiki's items_detail.json. Those two fields carry only a NUMBER; their stat type is fixed per gear type and is not stored anywhere in the data, so it has to be established externally. `confidence` records how each row was established: 'confirmed' = reproduced exactly against known-good per-item stat lines; 'inferred' = same shape as a confirmed sibling but not itself verified; 'none' = the gear type has no base stats at all (verified: 0/272 accessories carry one). Gear types that are still unknown are absent — the reader reports them rather than guessing a type.",
+  "schema_version": 1,
+  "gearTypes": {
+    "SCEPTER":  { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "confirmed" },
+    "BOW":      { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "confirmed" },
+    "CROSSBOW": { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "confirmed" },
+    "AXE":      { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "inferred" },
+    "STAFF":    { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "inferred" },
+    "SWORD":    { "base1": ["AttackDamage", "FLAT"], "base2": ["AttackSpeed", "FLAT"], "confidence": "inferred" },
+
+    "HELMET":   { "base1": ["Armor", "FLAT"], "base2": null, "confidence": "confirmed" },
+    "ARMOR":    { "base1": ["Armor", "FLAT"], "base2": null, "confidence": "confirmed" },
+    "GLOVES":   { "base1": ["Armor", "FLAT"], "base2": null, "confidence": "confirmed" },
+    "BOOTS":    { "base1": ["Armor", "FLAT"], "base2": null, "confidence": "confirmed" },
+
+    "TOME":     { "base1": ["MaxHp", "FLAT"], "base2": null, "confidence": "confirmed" },
+    "BOLT":     { "base1": ["CriticalDamage", "FLAT"], "base2": null, "confidence": "confirmed" },
+    "ARROW":    { "base1": ["AttackSpeed", "ADDITIVE"], "base2": null, "confidence": "confirmed" },
+
+    "AMULET":   { "base1": null, "base2": null, "confidence": "none" },
+    "BRACER":   { "base1": null, "base2": null, "confidence": "none" },
+    "EARING":   { "base1": null, "base2": null, "confidence": "none" },
+    "RING":     { "base1": null, "base2": null, "confidence": "none" }
+  },
+  "_unknown": {
+    "_note": "Present in the item table with a BaseStat1 value, but no ground truth for its stat type yet — none of these were equipped when the mapping was established. Left out of `gearTypes` deliberately: the reader flags them instead of assuming a type.",
+    "types": ["HATCHET", "ORB", "SHIELD"]
+  },
+  "_notes": {
+    "baseStatsAreNotAlwaysFlat": "ARROW's base stat is ADDITIVE, not FLAT. Assuming FLAT for every base stat reproduces 21/22 items and silently corrupts the 22nd.",
+    "accessoriesHaveNoBaseStats": "AMULET / BRACER / EARING / RING: 0 of 272 entries each carry BaseStat1 or BaseStat2.",
+    "weaponsWithTwoBaseStats": "AXE / BOW / CROSSBOW / SCEPTER / STAFF / SWORD are the only types with BaseStat2 (292/292 each)."
+  }
+}

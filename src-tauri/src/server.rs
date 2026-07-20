@@ -95,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meter/status", get(h_meter_status))
         .route("/api/meter/enable", post(h_meter_enable))
         .route("/api/hero-stats", get(h_hero_stats))
+        .route("/api/gear-lines", get(h_gear_lines))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -443,6 +444,17 @@ async fn h_wiki_item(State(s): State<AppState>, Query(q): Query<Q>) -> impl Into
 async fn h_meter(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.meter.live_json())
 }
+/// Equipped-gear stat lines rebuilt from the save + wiki items_detail (offline path).
+async fn h_gear_lines(State(s): State<AppState>) -> impl IntoResponse {
+    if !save::save_exists() {
+        return Json(json!({ "ok": false, "error": "save not found" }));
+    }
+    match crate::gearstats::build(&s.data_dir).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 async fn h_meter_status(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.meter.status())
 }
