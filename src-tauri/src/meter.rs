@@ -375,22 +375,48 @@ impl Meter {
                 "dictCount": dict_cnt,
             }));
         }
-        // Read each child dictionary with the float geometry: if two of them are the
-        // per-StatType FLAT/ADDITIVE buckets, aggregate_stat() over them must reproduce
-        // FINAL_STATS. That is the check that unlocks gear-swap simulation.
+        // Read each child dictionary with the 8-byte-value geometry and follow the values.
+        // A Dictionary<StatType, List<StatModifier>> is the shape that would let us decompose a
+        // hero's stats into FLAT/ADDITIVE/MULTIPLICATIVE buckets — which is what gear-swap
+        // simulation needs, since FINAL_STATS only exposes the aggregated product.
         let mut buckets = serde_json::Map::new();
         for off in [0x10usize, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48] {
             let d = match proc.read_ptr(mgr + off) { Ok(d) if d > 0x10000 => d, _ => continue };
-            let items = proc.dictfloat_items(d, 500).unwrap_or_default();
-            if items.is_empty() { continue; }
-            let m: serde_json::Map<String, Value> = items
-                .iter()
-                .filter(|(_, v)| *v != 0.0)
-                .map(|(k, v)| (crate::engine::stat_name(*k as i64).to_string(), json!(v)))
-                .collect();
-            if !m.is_empty() {
-                buckets.insert(format!("0x{off:x}"), Value::Object(m));
+            let entries = proc.dict8b_items(d, 500).unwrap_or_default();
+            if entries.is_empty() { continue; }
+            let mut rows = Vec::new();
+            for (stat_id, val) in entries.iter().take(80) {
+                let ptr = *val as usize;
+                let mut mods = Vec::new();
+                if ptr > 0x10000 {
+                    // try as List<StatModifier>
+                    if let Ok(items) = proc.list_ptrs(ptr, 200) {
+                        for m in items.iter().take(6) {
+                            let st = proc.read_i32(m + g("StatModifier", "STAT_TYPE")).unwrap_or(-1);
+                            let mt = proc.read_i32(m + g("StatModifier", "MOD_TYPE")).unwrap_or(-1);
+                            let vf = proc.read_f32(m + g("StatModifier", "VALUE")).unwrap_or(0.0);
+                            let vi = proc.read_i32(m + g("StatModifier", "VALUE")).unwrap_or(0);
+                            let src = proc.read_i32(m + g("StatModifier", "MOD_SOURCE")).unwrap_or(-1);
+                            mods.push(json!({
+                                "stat": crate::engine::stat_name(st as i64),
+                                "modType": mt, "valueF32": vf, "valueI32": vi, "source": src,
+                            }));
+                        }
+                    }
+                }
+                if !mods.is_empty() || (*val != 0 && ptr < 0x10000) {
+                    rows.push(json!({
+                        "statId": stat_id,
+                        "stat": crate::engine::stat_name(*stat_id as i64),
+                        "rawValue": val,
+                        "mods": mods,
+                    }));
+                }
             }
+            buckets.insert(format!("0x{off:x}"), json!({
+                "entryCount": entries.len(),
+                "rows": rows.into_iter().take(8).collect::<Vec<_>>(),
+            }));
         }
 
         Ok(json!({
@@ -398,7 +424,6 @@ impl Meter {
             "statsHolder": format!("0x{holder:x}"),
             "modifierMgr": format!("0x{mgr:x}"),
             "mgrClass": proc.read_ptr(mgr).ok().and_then(|k| proc.class_name(k)),
-            "i32": i32s,
             "candidateLists": lists,
             "children": children,
             "buckets": Value::Object(buckets),
@@ -461,6 +486,95 @@ impl Meter {
 
     #[cfg(not(windows))]
     pub fn probe_monster_hp(&self) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
+    /// Full stat-modifier decomposition for each fielded hero, straight from the game.
+    ///
+    /// `StatsHolder.MODIFIER_MGR` holds a `Dictionary<StatType, List<StatModifier>>` (64 entries,
+    /// one per StatType). Each modifier carries its MOD_SOURCE, so ITEM-sourced ones can be
+    /// swapped out — which is what gear-swap simulation needs. FINAL_STATS only exposes the
+    /// aggregated product, from which the buckets cannot be recovered (3 unknowns, 1 equation).
+    ///
+    /// Values are in the game's native units: ADDITIVE/MULTIPLICATIVE are fractions here, not the
+    /// per-mille/percent integers the reference engine displays.
+    #[cfg(windows)]
+    pub fn read_party_modifiers(&self) -> Result<Vec<Value>, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg
+            .calibrations()
+            .into_iter()
+            .find(|(k, _)| suffix(k) == fp)
+            .map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let g = |c: &str, f: &str| cfg.game_off(c, f);
+
+        let smi = calib.indices.get("StageManager").cloned().ok_or("no StageManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, smi).map_err(|e| e.to_string())?;
+        let sm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let hl = proc.read_ptr(sm + g("StageManager", "HERO_LIST")).unwrap_or(0);
+        if hl == 0 { return Ok(Vec::new()); }
+        let n = proc.read_il2cpp_array_len(hl).unwrap_or(0).clamp(0, 12);
+
+        let mut out = Vec::new();
+        for slot in 0..n as usize {
+            let h = proc.read_ptr(proc.il2cpp_array_data(hl) + slot * 8).unwrap_or(0);
+            if h == 0 { continue; }
+            let uf = proc.read_ptr(h + g("Unit", "CACHE")).unwrap_or(0);
+            if uf == 0 { continue; }
+            let hi = proc.read_ptr(uf + g("HeroRuntime", "INFO")).unwrap_or(0);
+            let hk = if hi != 0 { proc.read_i32(hi + g("HeroInfoData", "HERO_KEY")).unwrap_or(0) as i64 } else { 0 };
+            if hk <= 0 { continue; }
+            let holder = proc.read_ptr(uf + g("HeroRuntime", "STATS_HOLDER")).unwrap_or(0);
+            let mgr = if holder != 0 { proc.read_ptr(holder + g("StatsHolder", "MODIFIER_MGR")).unwrap_or(0) } else { 0 };
+            if mgr == 0 { continue; }
+            // Per-StatType dictionary at +0x10 (64 entries, matching the StatType enum).
+            let dict = proc.read_ptr(mgr + 0x10).unwrap_or(0);
+            if dict == 0 { continue; }
+
+            let mut stats = serde_json::Map::new();
+            for (stat_id, val) in proc.dict8b_items(dict, 500).unwrap_or_default() {
+                let list = val as usize;
+                if list <= 0x10000 { continue; }
+                let items = match proc.list_ptrs(list, 400) { Ok(i) => i, Err(_) => continue };
+                if items.is_empty() { continue; }
+                let (mut flat, mut add, mut mul) = (Vec::new(), Vec::new(), Vec::new());
+                let mut by_source: HashMap<i64, Vec<f64>> = HashMap::new();
+                for m in &items {
+                    let mt = proc.read_i32(m + g("StatModifier", "MOD_TYPE")).unwrap_or(-1);
+                    let v = proc.read_f32(m + g("StatModifier", "VALUE")).unwrap_or(0.0) as f64;
+                    let src = proc.read_i32(m + g("StatModifier", "MOD_SOURCE")).unwrap_or(-1) as i64;
+                    match mt {
+                        0 => flat.push(v),
+                        1 => add.push(v),
+                        2 => mul.push(v),
+                        _ => continue,
+                    }
+                    by_source.entry(src).or_default().push(v);
+                }
+                let src_json: serde_json::Map<String, Value> =
+                    by_source.into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+                stats.insert(
+                    crate::engine::stat_name(stat_id as i64).to_string(),
+                    json!({
+                        "flat": flat, "additive": add, "multiplicative": mul,
+                        "count": items.len(), "bySource": src_json,
+                    }),
+                );
+            }
+            out.push(json!({ "heroKey": hk, "slot": slot, "stats": Value::Object(stats) }));
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(windows))]
+    pub fn read_party_modifiers(&self) -> Result<Vec<Value>, String> {
         Err("memory reading is Windows-only".into())
     }
 

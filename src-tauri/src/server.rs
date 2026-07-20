@@ -95,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meter/status", get(h_meter_status))
         .route("/api/meter/enable", post(h_meter_enable))
         .route("/api/hero-stats", get(h_hero_stats))
+        .route("/api/hero-modifiers", get(h_hero_modifiers))
         .route("/api/gear-lines", get(h_gear_lines))
         .route("/api/debug/iteminfo", get(h_debug_iteminfo))
         .route("/api/debug/findrecord", get(h_debug_findrecord))
@@ -496,6 +497,60 @@ async fn h_debug_monsterhp(State(s): State<AppState>) -> impl IntoResponse {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
     }
+}
+
+/// Stat-modifier decomposition per hero, with a self-check: aggregating the buckets must
+/// reproduce the game's own FINAL_STATS. Only if it does is gear-swap simulation trustworthy,
+/// because a swap works by editing those buckets and re-aggregating.
+async fn h_hero_modifiers(State(s): State<AppState>) -> impl IntoResponse {
+    let mods = match s.meter.read_party_modifiers() {
+        Ok(m) => m,
+        Err(e) => return Json(json!({ "ok": false, "error": e })),
+    };
+    let finals = s.meter.read_party_stats().unwrap_or_default();
+    let mut heroes = Vec::new();
+    for m in &mods {
+        let key = m["heroKey"].as_i64().unwrap_or(0);
+        let fin_stats = finals
+            .iter()
+            .find(|f| f["heroKey"].as_i64() == Some(key))
+            .and_then(|f| f.get("stats"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let mut checks = Vec::new();
+        if let Some(stats) = m["stats"].as_object() {
+            for (name, b) in stats {
+                let sum = |k: &str| -> f64 {
+                    b.get(k)
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_f64()).sum())
+                        .unwrap_or(0.0)
+                };
+                let (f, a, mu) = (sum("flat"), sum("additive"), sum("multiplicative"));
+                // Game-native units: these are already fractions, so no divisors here.
+                let computed = f * (1.0 + a) * (1.0 + mu);
+                let actual = fin_stats
+                    .iter()
+                    .find(|(k, _)| engine::stat_name(k.parse::<i64>().unwrap_or(-1)) == name)
+                    .and_then(|(_, v)| v.as_f64());
+                if let Some(act) = actual {
+                    let diff = (computed - act).abs();
+                    let ok = diff < 1e-3 || (act != 0.0 && diff / act.abs() < 1e-4);
+                    checks.push(json!({
+                        "stat": name, "computed": computed, "final": act, "match": ok,
+                        "flatSum": f, "addSum": a, "mulSum": mu, "modCount": b.get("count"),
+                    }));
+                }
+            }
+        }
+        checks.sort_by(|a, b| a["stat"].as_str().unwrap_or("").cmp(b["stat"].as_str().unwrap_or("")));
+        let matched = checks.iter().filter(|c| c["match"].as_bool() == Some(true)).count();
+        heroes.push(json!({
+            "heroKey": key, "checked": checks.len(), "matched": matched, "checks": checks,
+        }));
+    }
+    Json(json!({ "ok": true, "heroes": heroes }))
 }
 
 async fn h_meter_status(State(s): State<AppState>) -> impl IntoResponse {
