@@ -96,6 +96,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/meter/enable", post(h_meter_enable))
         .route("/api/hero-stats", get(h_hero_stats))
         .route("/api/gear-lines", get(h_gear_lines))
+        .route("/api/debug/iteminfo", get(h_debug_iteminfo))
+        .route("/api/debug/findrecord", get(h_debug_findrecord))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -452,6 +454,30 @@ async fn h_gear_lines(State(s): State<AppState>) -> impl IntoResponse {
     match crate::gearstats::build(&s.data_dir).await {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// Probe the game's own ItemInfoData object for an ItemKey (game-authoritative layout discovery).
+async fn h_debug_iteminfo(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let key: i64 = q.get("key").and_then(|v| v.parse().ok()).unwrap_or(334031);
+    let words: usize = q.get("words").and_then(|v| v.parse().ok()).unwrap_or(64);
+    let deref = q.get("deref").and_then(|v| {
+        let t = v.trim_start_matches("0x");
+        usize::from_str_radix(t, 16).ok()
+    });
+    match s.meter.probe_item_info(key, words.min(512), deref) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn h_debug_findrecord(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let key: i32 = q.get("key").and_then(|v| v.parse().ok()).unwrap_or(334031);
+    let expect: Vec<i32> = q.get("expect").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(32);
+    match s.meter.find_record_with(key, expect, window.min(128)) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
     }
 }
 

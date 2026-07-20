@@ -199,6 +199,40 @@ impl Meter {
         json!({ "ok": true, "archived": total, "total": 0, "archive": ts.to_string() })
     }
 
+
+    /// Find records containing `key` as an i32 that also carry all of `expect` nearby.
+    /// Used to locate the gear-stats table, which is keyed by GearKey but lives in a class
+    /// whose index isn't known yet.
+    #[cfg(windows)]
+    pub fn find_record_with(&self, key: i32, expect: Vec<i32>, window: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let hits = proc.scan_i32(key, 100_000);
+        let mut matches = Vec::new();
+        for a in &hits {
+            let start = a.saturating_sub(window);
+            let bytes = match proc.read_bytes(start, window * 2 + 4) { Ok(b) => b, Err(_) => continue };
+            let ints: Vec<i32> = bytes.chunks_exact(4)
+                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            if expect.iter().all(|e| ints.contains(e)) {
+                matches.push(json!({
+                    "address": format!("0x{a:x}"),
+                    "windowStart": format!("0x{start:x}"),
+                    "i32": ints,
+                }));
+                if matches.len() >= 5 { break; }
+            }
+        }
+        Ok(json!({ "ok": true, "key": key, "totalHits": hits.len(), "matches": matches }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn find_record_with(&self, _key: i32, _expect: Vec<i32>, _window: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
     pub fn set_enabled(&self, on: bool) { self.inner.lock().unwrap().enabled = on; }
 
     pub fn offsets(&self) -> Result<Offsets, String> {
@@ -259,6 +293,85 @@ impl Meter {
 
     #[cfg(not(windows))]
     pub fn read_party_stats(&self) -> Result<Vec<Value>, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
+    /// Locate the live `ItemInfoData` object for an ItemKey and dump its field window as i32s.
+    ///
+    /// Used to establish where the game keeps each item's stat lines. The game is the
+    /// authoritative source for numeric parameters, but its asset files no longer ship a plain
+    /// table (searched exhaustively), so the layout has to be recovered from a loaded object.
+    #[cfg(windows)]
+    pub fn probe_item_info(&self, want_key: i64, words: usize, deref: Option<usize>) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg
+            .calibrations()
+            .into_iter()
+            .find(|(k, _)| suffix(k) == fp)
+            .map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let idx = calib.indices.get("ItemInfoData").cloned().ok_or("no ItemInfoData index")?;
+        let klass = proc.class_by_type_index(calib.anchor_rva, idx).map_err(|e| e.to_string())?;
+        let name = proc.class_name(klass).unwrap_or_default();
+        let key_off = cfg
+            .game
+            .get("ItemInfoData")
+            .and_then(|m| m.get("ITEM_KEY"))
+            .cloned()
+            .unwrap_or(48) as usize;
+
+        let instances = proc.find_instances(klass, 20000);
+        let mut matched = None;
+        for a in &instances {
+            if proc.read_i32(a + key_off).ok().map(|v| v as i64) == Some(want_key) {
+                matched = Some(*a);
+                break;
+            }
+        }
+        let addr = matched.ok_or_else(|| {
+            format!("ItemKey {want_key} not found among {} ItemInfoData instances", instances.len())
+        })?;
+
+        // Optionally follow a pointer stored at `deref` within the record, and dump its target
+        // instead — the stat lines live behind per-record pointers, not inline.
+        let (addr, via) = match deref {
+            Some(off) => {
+                let p = proc.read_ptr(addr + off).map_err(|e| e.to_string())?;
+                if p == 0 { return Err(format!("null pointer at +0x{off:x}")); }
+                (p, Some(format!("+0x{off:x}")))
+            }
+            None => (addr, None),
+        };
+
+        let bytes = proc.read_bytes(addr, words * 4).map_err(|e| e.to_string())?;
+        let i32s: Vec<i32> = bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let f32s: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        Ok(json!({
+            "ok": true,
+            "className": name,
+            "instanceCount": instances.len(),
+            "address": format!("0x{addr:x}"),
+            "via": via,
+            "itemKeyOffset": key_off,
+            "i32": i32s,
+            "f32": f32s.iter().map(|v| if v.is_finite() && v.abs() < 1e9 { json!(v) } else { Value::Null }).collect::<Vec<_>>(),
+        }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn probe_item_info(&self, _want_key: i64, _words: usize, _deref: Option<usize>) -> Result<Value, String> {
         Err("memory reading is Windows-only".into())
     }
 

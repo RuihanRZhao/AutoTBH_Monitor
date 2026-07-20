@@ -275,6 +275,66 @@ impl GameProcess {
         Ok(out)
     }
 
+    /// Find live instances of an IL2CPP class by scanning committed memory for objects whose
+    /// first qword is the class pointer. Self-references inside the class object itself are
+    /// excluded (a class contains pointers to itself).
+    pub fn find_instances(&self, klass: usize, limit: usize) -> Vec<usize> {
+        let needle = (klass as u64).to_le_bytes();
+        let mut hits = Vec::new();
+        for (base, size) in self.readable_regions(4096) {
+            if hits.len() >= limit { break; }
+            // Skip the class object's own neighbourhood.
+            if base <= klass && klass < base + size && size < 0x1000 { continue; }
+            let mut off = 0usize;
+            const CHUNK: usize = 1 << 20;
+            while off < size {
+                let len = CHUNK.min(size - off);
+                let buf = match self.read_bytes(base + off, len) { Ok(b) => b, Err(_) => break };
+                let mut i = 0usize;
+                while i + 8 <= buf.len() {
+                    if buf[i..i + 8] == needle {
+                        let addr = base + off + i;
+                        if !(klass..klass + 0x400).contains(&addr) {
+                            hits.push(addr);
+                            if hits.len() >= limit { break; }
+                        }
+                    }
+                    i += 8; // IL2CPP objects are 8-aligned
+                }
+                if hits.len() >= limit { break; }
+                off += len;
+            }
+        }
+        hits
+    }
+
+    /// Scan committed memory for a 4-aligned i32 equal to `value`. Used to locate a data record
+    /// by a known key when the owning class isn't known yet.
+    pub fn scan_i32(&self, value: i32, limit: usize) -> Vec<usize> {
+        let needle = value.to_le_bytes();
+        let mut hits = Vec::new();
+        for (base, size) in self.readable_regions(4096) {
+            if hits.len() >= limit { break; }
+            let mut off = 0usize;
+            const CHUNK: usize = 1 << 20;
+            while off < size {
+                let len = CHUNK.min(size - off);
+                let buf = match self.read_bytes(base + off, len) { Ok(b) => b, Err(_) => break };
+                let mut i = 0usize;
+                while i + 4 <= buf.len() {
+                    if buf[i..i + 4] == needle {
+                        hits.push(base + off + i);
+                        if hits.len() >= limit { break; }
+                    }
+                    i += 4;
+                }
+                if hits.len() >= limit { break; }
+                off += len;
+            }
+        }
+        hits
+    }
+
     /// Build fingerprint from the PE header: "<version>-<TimeDateStamp:#x>-<SizeOfImage:#x>".
     pub fn pe_fingerprint(&self, version: &str) -> Result<String> {
         let e_lfanew = self.read_i32(self.module_base + 0x3C)? as usize;

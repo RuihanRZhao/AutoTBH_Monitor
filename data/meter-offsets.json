@@ -214,6 +214,22 @@
       "DAMAGE_ATTRIBUTE": 16,
       "DAMAGE_TYPE": 20,
       "HIT_EFFECTS": 32
+    },
+    "GearStatData": {
+      "_comment": "Game-authoritative gear stat table, located by scanning for a known GearKey and confirming all 9 fields against known-good values for item 334031. This is the source of truth for gear stat lines; the wiki's items_detail.json is the offline fallback.",
+      "GEAR_KEY": 0,
+      "BASE_STAT1_VALUE": 4,
+      "BASE_STAT2_VALUE": 8,
+      "INHERENT1_STATTYPE": 12,
+      "INHERENT1_MODTYPE": 16,
+      "INHERENT1_VALUE": 20,
+      "INHERENT2_STATTYPE": 24,
+      "INHERENT2_MODTYPE": 28,
+      "INHERENT2_VALUE": 32,
+      "INHERENT3_STATTYPE": 36,
+      "INHERENT3_MODTYPE": 40,
+      "INHERENT3_VALUE": 44,
+      "_stride": "not yet determined - confirmed on one record; verify against a second GearKey before bulk enumeration"
     }
   },
   "enums": {
