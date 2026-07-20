@@ -311,6 +311,159 @@ impl Meter {
         Err("memory reading is Windows-only".into())
     }
 
+
+    /// Probe a fielded hero's StatsHolder -> MODIFIER_MGR, to locate the stat-modifier list.
+    /// Needed for gear-swap simulation: FINAL_STATS gives only the aggregated product, so the
+    /// per-bucket contributions (and their MOD_SOURCE) have to come from the modifier list.
+    #[cfg(windows)]
+    pub fn probe_modifier_mgr(&self, words: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let g = |c: &str, f: &str| cfg.game_off(c, f);
+
+        let smi = calib.indices.get("StageManager").cloned().ok_or("no StageManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, smi).map_err(|e| e.to_string())?;
+        let sm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let hl = proc.read_ptr(sm + g("StageManager", "HERO_LIST")).unwrap_or(0);
+        if hl == 0 { return Err("no hero list".into()); }
+        let h = proc.read_ptr(proc.il2cpp_array_data(hl)).unwrap_or(0);
+        if h == 0 { return Err("no hero in slot 0".into()); }
+        let uf = proc.read_ptr(h + g("Unit", "CACHE")).unwrap_or(0);
+        let sh = proc.read_ptr(uf + g("StatsHolder", "MODIFIER_MGR").max(16) - 16 + 16).unwrap_or(0);
+        let holder = proc.read_ptr(uf + g("HeroRuntime", "STATS_HOLDER")).unwrap_or(0);
+        let mgr = proc.read_ptr(holder + g("StatsHolder", "MODIFIER_MGR")).unwrap_or(0);
+        let _ = sh;
+        if mgr == 0 { return Err(format!("MODIFIER_MGR null (holder=0x{holder:x})")); }
+
+        let bytes = proc.read_bytes(mgr, words * 4).map_err(|e| e.to_string())?;
+        let i32s: Vec<i32> = bytes.chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        // Try interpreting nearby pointers as List<T>
+        let mut lists = Vec::new();
+        for off in (0..words * 4).step_by(8) {
+            if let Ok(p) = proc.read_ptr(mgr + off) {
+                if p > 0x10000 {
+                    if let Ok((items, size)) = proc.read_il2cpp_list(p) {
+                        if size > 0 && size < 5000 && items > 0x10000 {
+                            lists.push(json!({ "atOffset": format!("0x{off:x}"), "size": size }));
+                        }
+                    }
+                }
+            }
+        }
+        // Follow each pointer one level: report its class name and whether it looks like a
+        // List<T> or a Dictionary, so the modifier storage shape can be identified.
+        let mut children = Vec::new();
+        for off in (0..words * 4).step_by(8) {
+            let p = match proc.read_ptr(mgr + off) { Ok(p) if p > 0x10000 => p, _ => continue };
+            let klass = proc.read_ptr(p).ok().filter(|k| *k > 0x10000);
+            let name = klass.and_then(|k| proc.class_name(k));
+            let as_list = proc.read_il2cpp_list(p).ok().filter(|(it, sz)| *it > 0x10000 && *sz > 0 && *sz < 5000);
+            let dict_cnt = proc.read_i32(p + 0x20).ok().filter(|c| *c > 0 && *c < 5000);
+            children.push(json!({
+                "atOffset": format!("0x{off:x}"),
+                "addr": format!("0x{p:x}"),
+                "class": name,
+                "listSize": as_list.map(|(_, s)| s),
+                "dictCount": dict_cnt,
+            }));
+        }
+        // Read each child dictionary with the float geometry: if two of them are the
+        // per-StatType FLAT/ADDITIVE buckets, aggregate_stat() over them must reproduce
+        // FINAL_STATS. That is the check that unlocks gear-swap simulation.
+        let mut buckets = serde_json::Map::new();
+        for off in [0x10usize, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48] {
+            let d = match proc.read_ptr(mgr + off) { Ok(d) if d > 0x10000 => d, _ => continue };
+            let items = proc.dictfloat_items(d, 500).unwrap_or_default();
+            if items.is_empty() { continue; }
+            let m: serde_json::Map<String, Value> = items
+                .iter()
+                .filter(|(_, v)| *v != 0.0)
+                .map(|(k, v)| (crate::engine::stat_name(*k as i64).to_string(), json!(v)))
+                .collect();
+            if !m.is_empty() {
+                buckets.insert(format!("0x{off:x}"), Value::Object(m));
+            }
+        }
+
+        Ok(json!({
+            "ok": true,
+            "statsHolder": format!("0x{holder:x}"),
+            "modifierMgr": format!("0x{mgr:x}"),
+            "mgrClass": proc.read_ptr(mgr).ok().and_then(|k| proc.class_name(k)),
+            "i32": i32s,
+            "candidateLists": lists,
+            "children": children,
+            "buckets": Value::Object(buckets),
+        }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn probe_modifier_mgr(&self, _words: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
+
+    /// Dump live monsters' current/max HP straight from the game.
+    /// Settles whether a stage table's totalHP is on the same scale as what the game actually
+    /// spawns — the game is the authority for numeric parameters.
+    #[cfg(windows)]
+    pub fn probe_monster_hp(&self) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+        let g = |c: &str, f: &str| cfg.game_off(c, f);
+        let i = calib.indices.get("MonsterSpawnManager").cloned().ok_or("no MonsterSpawnManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, i).map_err(|e| e.to_string())?;
+        let msm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let list = proc.read_ptr(msm + g("MonsterSpawnManager", "MONSTER_LIST")).unwrap_or(0);
+        let units = proc.list_ptrs(list, 600).unwrap_or_default();
+
+        let mut mons = Vec::new();
+        let mut stage_votes: HashMap<i64, i32> = HashMap::new();
+        for u in &units {
+            let hc = proc.read_ptr(u + g("Unit", "HEALTH_CONTROLLER")).unwrap_or(0);
+            if hc == 0 { continue; }
+            let cur = proc.read_f32(hc + g("UnitHealthController", "HP_CURRENT")).unwrap_or(0.0);
+            let max = proc.read_f32(hc + g("UnitHealthController", "HP_MAX")).unwrap_or(0.0);
+            if let Ok(sk) = proc.read_i32(u + g("Monster", "STAGE_KEY")) {
+                let sk = sk as i64;
+                if sk > 0 && sk < 10_000_000 { *stage_votes.entry(sk).or_insert(0) += 1; }
+            }
+            if max > 0.0 { mons.push(json!({ "hpCurrent": cur, "hpMax": max })); }
+        }
+        let stage = stage_votes.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k);
+        let maxes: Vec<f64> = mons.iter().filter_map(|m| m["hpMax"].as_f64()).collect();
+        let avg = if maxes.is_empty() { 0.0 } else { maxes.iter().sum::<f64>() / maxes.len() as f64 };
+        Ok(json!({
+            "ok": true,
+            "stageKey": stage,
+            "aliveMonsters": mons.len(),
+            "avgHpMax": avg,
+            "minHpMax": maxes.iter().cloned().fold(f64::INFINITY, f64::min),
+            "maxHpMax": maxes.iter().cloned().fold(0.0, f64::max),
+            "monsters": mons.into_iter().take(12).collect::<Vec<_>>(),
+        }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn probe_monster_hp(&self) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
     pub fn set_enabled(&self, on: bool) { self.inner.lock().unwrap().enabled = on; }
 
     pub fn offsets(&self) -> Result<Offsets, String> {

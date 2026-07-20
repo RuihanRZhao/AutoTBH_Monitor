@@ -98,6 +98,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/gear-lines", get(h_gear_lines))
         .route("/api/debug/iteminfo", get(h_debug_iteminfo))
         .route("/api/debug/findrecord", get(h_debug_findrecord))
+        .route("/api/debug/modifiers", get(h_debug_modifiers))
+        .route("/api/debug/monsterhp", get(h_debug_monsterhp))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -476,6 +478,21 @@ async fn h_debug_findrecord(State(s): State<AppState>, Query(q): Query<Q>) -> im
     let expect: Vec<i32> = q.get("expect").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
     let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(32);
     match s.meter.find_record_with(key, expect, window.min(128)) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn h_debug_modifiers(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let words: usize = q.get("words").and_then(|v| v.parse().ok()).unwrap_or(32);
+    match s.meter.probe_modifier_mgr(words.min(256)) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn h_debug_monsterhp(State(s): State<AppState>) -> impl IntoResponse {
+    match s.meter.probe_monster_hp() {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
     }
