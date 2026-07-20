@@ -231,11 +231,11 @@ async fn h_runs_reset(State(s): State<AppState>, Query(q): Query<Q>) -> impl Int
 }
 
 /// Save-derived insights (native Rust; simulation-dependent parts are flagged, not guessed).
-async fn h_insights() -> impl IntoResponse {
+async fn h_insights(State(s): State<AppState>) -> impl IntoResponse {
     if !save::save_exists() {
         return Json(json!({ "found": false }));
     }
-    match crate::insights::build() {
+    match crate::insights::build(&s.data_dir, &s.meter) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "found": true, "error": e.to_string() })),
     }

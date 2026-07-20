@@ -68,7 +68,38 @@ pub fn stage_level_for(data_dir: &std::path::Path, stage_key: i64) -> Option<f64
         .and_then(|l| l.as_f64())
 }
 
-pub fn build() -> anyhow::Result<Value> {
+/// Per-hero combat numbers from the running game, keyed by heroKey.
+/// Empty when the game isn't running — the save carries no resolved stats, so these are the
+/// only trustworthy source for them.
+fn live_combat(data_dir: &std::path::Path, meter: &crate::meter::Meter) -> HashMap<i64, Value> {
+    let p = crate::engine::Params::default();
+    let stage_level = current_stage_level(data_dir).unwrap_or(1.0);
+    let mut out = HashMap::new();
+    let list = match meter.read_party_stats() { Ok(l) => l, Err(_) => return out };
+    for h in list {
+        let key = match h.get("heroKey").and_then(|v| v.as_i64()) { Some(k) => k, None => continue };
+        let raw = h.get("stats").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let get = |id: i64| raw.get(&id.to_string()).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let auto = crate::engine::auto_dps_game(get(1), get(2), get(3), get(4), &p);
+        let (max_hp, armor) = (get(5), get(6));
+        let dodge = get(16) * crate::engine::game_to_display_scale(16).unwrap_or(1000.0);
+        let ehp = crate::engine::ehp_from_stats(max_hp, armor, stage_level, dodge, &p);
+        out.insert(key, json!({
+            "autoDps": auto,
+            "dps": auto,                 // == autoDps until skill DPS lands
+            "ehp": ehp,
+            "power": crate::engine::power(auto, ehp),
+            "maxHp": max_hp,
+            "armor": armor,
+            "dodgePercent": dodge,
+            "armorMitigation": crate::engine::armor_mitigation(armor, stage_level, &p),
+            "stageLevel": stage_level,
+        }));
+    }
+    out
+}
+
+pub fn build(data_dir: &std::path::Path, meter: &crate::meter::Meter) -> anyhow::Result<Value> {
     let raw = save::player_save_data_string()?;
     let psd: Value = serde_json::from_str(&raw)?;
 
@@ -118,6 +149,44 @@ pub fn build() -> anyhow::Result<Value> {
         let pa = a["partySlot"].as_i64().unwrap_or(99);
         let pb = b["partySlot"].as_i64().unwrap_or(99);
         pa.cmp(&pb).then(b["level"].as_i64().unwrap_or(0).cmp(&a["level"].as_i64().unwrap_or(0)))
+    });
+
+    // Merge live combat numbers (game-authoritative) onto the save-derived roster.
+    let combat = live_combat(data_dir, meter);
+    for h in heroes.iter_mut() {
+        let key = h["heroKey"].as_i64().unwrap_or(0);
+        if let (Some(obj), Some(c)) = (h.as_object_mut(), combat.get(&key)) {
+            if let Some(cm) = c.as_object() {
+                for (k, v) in cm { obj.insert(k.clone(), v.clone()); }
+            }
+        }
+    }
+
+    // Party aggregates. Only heroes with live numbers contribute; EHP of a party is the
+    // weakest link (whoever dies first), not the sum.
+    let fielded: Vec<&Value> = heroes.iter().filter(|h| h["inParty"].as_bool() == Some(true)).collect();
+    let party_dps: f64 = fielded.iter().filter_map(|h| h["dps"].as_f64()).sum();
+    let party_ehp = fielded
+        .iter()
+        .filter_map(|h| h["ehp"].as_f64())
+        .fold(f64::INFINITY, f64::min);
+    let carry = fielded
+        .iter()
+        .filter(|h| h["dps"].is_number())
+        .max_by(|a, b| {
+            a["dps"].as_f64().unwrap_or(0.0).partial_cmp(&b["dps"].as_f64().unwrap_or(0.0)).unwrap()
+        });
+    let meta = json!({
+        "party": arranged,
+        "partyDPS": if party_dps > 0.0 { json!(party_dps) } else { Value::Null },
+        "partyEHP": if party_ehp.is_finite() { json!(party_ehp) } else { Value::Null },
+        "carryHero": carry.map(|h| h["heroKey"].clone()).unwrap_or(Value::Null),
+        "carryShare": carry
+            .and_then(|h| h["dps"].as_f64())
+            .filter(|_| party_dps > 0.0)
+            .map(|d| json!(d / party_dps))
+            .unwrap_or(Value::Null),
+        "combatSource": if combat.is_empty() { "unavailable (game not running)" } else { "live game memory" },
     });
 
     let unlocked_heroes = heroes.iter().filter(|h| h["unlocked"].as_bool() == Some(true)).count();
@@ -220,6 +289,7 @@ pub fn build() -> anyhow::Result<Value> {
         "found": true,
         "saveMtime": save::save_mtime(),
         "insights": {
+            "meta": meta,
             "headline": headline,
             "todo": todo,
             "progression": progression,
@@ -245,9 +315,11 @@ pub fn build() -> anyhow::Result<Value> {
                 "inventory": { "used": inv_used, "slots": inventory.len() },
             },
             // Explicitly NOT guessed: these need the game's simulation engine.
+            // dps/ehp/power now land on each hero (live game) and in `meta`.
             "engine": {
                 "pending": true,
-                "missing": ["partyDps", "partyEhp", "power", "gearScoring", "farmClearTimeModel", "upgradeFinder"],
+                "missing": ["skillDps", "gearScoring", "farmClearTimeModel", "upgradeFinder"],
+                "note": "hero dps/ehp/power require the game running; the save carries no resolved stats",
             },
         }
     }))
