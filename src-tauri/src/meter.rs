@@ -125,6 +125,14 @@ pub struct MeterInner {
     last_alive: i64,
     run_start_ts: Option<f64>,
     run_start_gold: Option<i64>,
+    /// Most recently observed `stage_key` from the monster-vote in the main scan (i.e. read
+    /// directly off a live `Monster.STAGE_KEY`), kept even through the empty-field gap at a
+    /// clear. This is the ONLY reliable way to know a clear's difficulty tier: farm_stages.json
+    /// encodes key = difficultyTier*1000 + act*100 + stageNo (1=NORMAL..4=TORMENT), but
+    /// StageClearLog's own ACT/STAGE fields carry no difficulty at all — reconstructing the key
+    /// from them alone would have to guess the tier (an earlier version of this hardcoded
+    /// NORMAL, which only looked correct because all our test clears happened to BE NORMAL).
+    last_seen_stage_key: Option<i64>,
     /// Object addresses of the last-seen tail of LogManager.LOG_LIST, oldest first. Identity
     /// (the heap address of each log entry object), NOT array length or index, is what marks an
     /// entry as "already processed" — the list is capped at 2000 by the game itself (confirmed
@@ -197,6 +205,8 @@ impl Meter {
             "enabled": g.enabled, "attached": g.attached, "error": g.error,
             "runCount": g.runs.len(),
             "build": g.live.as_ref().and_then(|l| l.build.clone()),
+            "lastSeenStageKey": g.last_seen_stage_key,
+            "logSeeded": g.log_seeded, "logTailLen": g.log_tail.len(),
         })
     }
 
@@ -1047,7 +1057,7 @@ impl Meter {
             (g.log_tail.clone(), g.log_seeded)
         };
         const LOG_TAIL_WINDOW: usize = 64;
-        let mut new_clears: Vec<(i64, i64)> = Vec::new(); // (stageKey, clearTimeSec)
+        let mut new_clears: Vec<(i64, i64, i64)> = Vec::new(); // (act, stage, clearTimeSec)
         let mut new_fails = 0usize;
         let mut log_tail_now: Vec<usize> = Vec::new();
         if let Some(i) = idx("LogManager") {
@@ -1084,8 +1094,10 @@ impl Meter {
                                         // floats (~1e-43), which is how this was first misread.
                                         let ct = proc.read_i32(e + g_off("StageClearLog", "CLEAR_TIME")).unwrap_or(0) as i64;
                                         if act > 0 && stage > 0 && ct > 0 {
-                                            // key = 1000 + act*100 + stageNo, matching farm_stages.json
-                                            new_clears.push((1000 + act * 100 + stage, ct));
+                                            // (act, stage) alone can't tell NORMAL from TORMENT —
+                                            // the difficulty tier is resolved later, from the
+                                            // last live-observed Monster.STAGE_KEY.
+                                            new_clears.push((act, stage, ct));
                                         }
                                     }
                                     "StageFailedLog" => new_fails += 1,
@@ -1117,6 +1129,7 @@ impl Meter {
             if prev_hp > 0.0 { damage_this_tick += prev_hp as f64; }
         }
         g.last_hp = current;
+        if let Some(sk) = stage_key { g.last_seen_stage_key = Some(sk); }
 
         // `run_start_ts` is now ONLY a live-display "how long has combat been continuous"
         // ticker — it no longer decides when a RunRecord gets written. That decision comes
@@ -1132,12 +1145,23 @@ impl Meter {
             g.log_seeded = true;
             g.run_start_gold = gold;
         } else {
-            for (stage_key, clear_sec) in &new_clears {
+            for (act, stage, clear_sec) in &new_clears {
+                // The log's own ACT/STAGE can't distinguish NORMAL from TORMENT — only the
+                // difficulty-bearing key does that (farm_stages.json: key = tier*1000 +
+                // act*100 + stageNo). Trust the last live-observed Monster.STAGE_KEY ONLY if
+                // its act/stage agree with what the log just reported; otherwise this clear
+                // happened on a stage we never got a monster-vote for (e.g. attach mid-stage),
+                // and guessing the tier would silently mislabel a HELL clear as NORMAL — so
+                // fall back to tier 1 but leave `difficulty` at None to say so honestly.
+                let observed = g.last_seen_stage_key
+                    .filter(|k| (k / 100) % 10 == *act && k % 100 == *stage);
+                let resolved_key = observed.unwrap_or(1000 + act * 100 + stage);
+                let difficulty = observed.map(|k| k / 1000);
                 let rec = RunRecord {
                     ts,
                     outcome: "success".into(),
-                    stage_key: Some(*stage_key),
-                    difficulty: None,
+                    stage_key: Some(resolved_key),
+                    difficulty,
                     clear_time: Some(*clear_sec as f64),
                     total_damage: Some(g.total_damage),
                     gold: match (gold, g.run_start_gold) {

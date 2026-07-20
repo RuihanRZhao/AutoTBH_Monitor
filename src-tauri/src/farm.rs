@@ -150,3 +150,158 @@ pub fn now_ms() -> f64 {
         .map(|d| d.as_millis() as f64)
         .unwrap_or(0.0)
 }
+
+/// Calibration constants from `data/farm-calibration.json`, needed to rank stages that have
+/// never been farmed. See that file's `_comment`s for how each was derived.
+pub struct RankCalib {
+    /// `farm_stages.json`'s `totalHP` is this many times the real stage HP.
+    pub stage_hp_scale: f64,
+    pub per_wave_sec: f64,
+    pub per_monster_sec: f64,
+    pub fitted_dps: f64,
+    /// The movement speed the above three constants were fitted at (~10.4). `perWaveSec` bakes
+    /// in this speed silently — see `movementSpeedConfound` — so a party far from it should not
+    /// trust the modelled clear time without a caveat attached.
+    pub baseline_movement_speed: f64,
+}
+
+/// clearSec for a stage that has never been measured, from table-derived HP and the fitted
+/// per-wave/per-monster/DPS constants. NOT to be presented next to a measured clearSec without
+/// both being labelled — see the module-level ranking constraint this exists to satisfy.
+fn modelled_clear_sec(total_hp_raw: f64, waves: f64, monsters: f64, c: &RankCalib) -> f64 {
+    let real_hp = total_hp_raw / c.stage_hp_scale;
+    c.per_wave_sec * waves + c.per_monster_sec * monsters + real_hp / c.fitted_dps
+}
+
+/// Rank every stage in `farm_stages.json` by gold/hr and exp/hr, WITHOUT ever comparing a
+/// measured clear time to a modelled one directly. `measured` is the `"stages"` array from
+/// [`aggregate_runs_for_farm`] — real player data, already clean (no `totalHP` in it at all).
+/// Everything else is priced with the game's own `expectedGold`/`expectedEXP` (unaffected by the
+/// HP-scale bug — that bug is specifically in `totalHP`) divided by whichever clear time applies.
+///
+/// Returns `{ measured: [...], modelled: [...] }` as two separate, separately-sorted lists. This
+/// is the fix for the confirmed bug: the reference app puts both into one ranking, so whichever
+/// stages the player happened to farm (accurate short clear times) get buried under unfarmed
+/// stages whose modelled clear time is ~10x too fast (from the same HP bug), producing an
+/// EXP/gold-per-hour figure inflated by up to ~78x. Keeping the lists apart makes that
+/// impossible: a modelled figure can only ever be compared against other modelled figures.
+pub fn rank_stages(stages: &[Value], measured: &[Value], calib: &RankCalib) -> Value {
+    let by_key: HashMap<i64, &Value> = measured
+        .iter()
+        .filter_map(|m| Some((m.get("stageKey")?.as_i64()?, m)))
+        .collect();
+
+    let mut measured_out = Vec::new();
+    let mut modelled_out = Vec::new();
+
+    for s in stages {
+        let Some(key) = s.get("key").and_then(|v| v.as_i64()) else { continue };
+        let expected_gold = s.get("expectedGold").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let expected_exp = s.get("expectedEXP").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let label = s.get("label").cloned().unwrap_or(Value::Null);
+
+        if let Some(m) = by_key.get(&key) {
+            let clear_sec = m.get("clearSec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if clear_sec <= 0.0 { continue; }
+            // Cross-check the table's reward constants against what was actually measured —
+            // the same "surface disagreements instead of trusting one source" pattern used for
+            // gear lines. A real mismatch here would mean expectedGold/expectedEXP themselves
+            // need recalibrating, same class of bug as stageHpScale.
+            let measured_gold_per_sec = m.get("goldPerSec").and_then(|v| v.as_f64());
+            let table_gold_per_sec = if expected_gold > 0.0 { Some(expected_gold / clear_sec) } else { None };
+            let gold_disagrees = match (measured_gold_per_sec, table_gold_per_sec) {
+                (Some(a), Some(b)) if b > 0.0 => ((a - b).abs() / b) > 0.25,
+                _ => false,
+            };
+            measured_out.push(json!({
+                "stageKey": key, "label": label,
+                "source": "measured", "n": m.get("n").cloned().unwrap_or(Value::Null),
+                "clearSec": clear_sec,
+                "goldPerSec": measured_gold_per_sec.or(table_gold_per_sec),
+                "expPerSec": m.get("expPerSec").cloned().unwrap_or(json!(
+                    if expected_exp > 0.0 { expected_exp / clear_sec } else { 0.0 }
+                )),
+                "goldPerHour": measured_gold_per_sec.or(table_gold_per_sec).map(|g| g * 3600.0),
+                "expPerHour": (if expected_exp > 0.0 { expected_exp / clear_sec } else { 0.0 }) * 3600.0,
+                "tableGoldDisagreesWithMeasured": gold_disagrees,
+            }));
+        } else {
+            let waves = s.get("waves").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let monsters = s.get("count").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let total_hp = s.get("totalHP").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if waves <= 0.0 || total_hp <= 0.0 { continue; }
+            let clear_sec = modelled_clear_sec(total_hp, waves, monsters, calib);
+            if clear_sec <= 0.0 { continue; }
+            let gold_per_sec = if expected_gold > 0.0 { expected_gold / clear_sec } else { 0.0 };
+            let exp_per_sec = if expected_exp > 0.0 { expected_exp / clear_sec } else { 0.0 };
+            modelled_out.push(json!({
+                "stageKey": key, "label": label,
+                "source": "modelled",
+                "clearSec": clear_sec,
+                "goldPerSec": gold_per_sec, "expPerSec": exp_per_sec,
+                "goldPerHour": gold_per_sec * 3600.0, "expPerHour": exp_per_sec * 3600.0,
+            }));
+        }
+    }
+
+    let sort_desc = |v: &mut Vec<Value>, field: &str| {
+        v.sort_by(|a, b| {
+            b[field].as_f64().unwrap_or(0.0).partial_cmp(&a[field].as_f64().unwrap_or(0.0)).unwrap()
+        });
+    };
+    sort_desc(&mut measured_out, "expPerHour");
+    sort_desc(&mut modelled_out, "expPerHour");
+
+    json!({
+        "ok": true,
+        "measured": measured_out,
+        "modelled": modelled_out,
+        "modelledCaveat": "Clear time for these stages is a MODEL, not a measurement — accurate \
+            only near the calibration's baseline party movement speed. Never compare its \
+            goldPerHour/expPerHour directly against the measured list.",
+        "calibBaselineMovementSpeed": calib.baseline_movement_speed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn calib() -> RankCalib {
+        RankCalib {
+            stage_hp_scale: 10.0978,
+            per_wave_sec: 3.342,
+            per_monster_sec: 0.475,
+            fitted_dps: 1321.0,
+            baseline_movement_speed: 10.38,
+        }
+    }
+
+    /// Ground-truth check against the real stage-1101 numbers recorded in
+    /// data/farm-calibration.json: waves=10, count=10, totalHP=560 measured ~41s live.
+    #[test]
+    fn modelled_clear_sec_matches_ground_truth_stage_1101() {
+        let sec = modelled_clear_sec(560.0, 10.0, 10.0, &calib());
+        assert!((sec - 38.7).abs() < 2.0, "got {sec}, expected close to the measured ~41s");
+    }
+
+    /// The whole point of this function: a stage present in `measured` must never end up priced
+    /// by the model, and vice versa — that mixing is the confirmed bug this replaces.
+    #[test]
+    fn measured_and_modelled_stay_partitioned() {
+        let stages = vec![
+            json!({ "key": 1101, "label": "1-1", "waves": 10, "count": 10, "totalHP": 560.0, "expectedGold": 14.0, "expectedEXP": 16.0 }),
+            json!({ "key": 1102, "label": "1-2", "waves": 11, "count": 22, "totalHP": 2040.0, "expectedGold": 30.0, "expectedEXP": 40.0 }),
+        ];
+        let measured = vec![
+            json!({ "stageKey": 1101, "n": 5, "clearSec": 41.0, "goldPerSec": 2.0, "expPerSec": 3.0 }),
+        ];
+        let out = rank_stages(&stages, &measured, &calib());
+        let m: Vec<i64> = out["measured"].as_array().unwrap().iter().map(|r| r["stageKey"].as_i64().unwrap()).collect();
+        let d: Vec<i64> = out["modelled"].as_array().unwrap().iter().map(|r| r["stageKey"].as_i64().unwrap()).collect();
+        assert_eq!(m, vec![1101]);
+        assert_eq!(d, vec![1102]);
+        // No stage may appear in both.
+        assert!(m.iter().all(|k| !d.contains(k)));
+    }
+}

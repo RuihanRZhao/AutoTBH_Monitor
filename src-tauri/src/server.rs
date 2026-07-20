@@ -87,6 +87,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stash-scan", get(h_stash_scan))
         .route("/api/wiki-item", get(h_wiki_item))
         .route("/api/farm-calibration", get(h_farm_calibration))
+        .route("/api/farm-rank", get(h_farm_rank))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -225,6 +226,69 @@ async fn h_farm_calibration(State(s): State<AppState>, Query(q): Query<Q>) -> im
     }
     Json(farm::aggregate_runs_for_farm(&runs, &opts))
 }
+
+/// Every stage in farm_stages.json, ranked by gold/hr and exp/hr — measured and modelled kept in
+/// separate lists (see `farm::rank_stages`). This is the fix for the confirmed EXP-farming bug:
+/// mixing measured clear times with modelled ones (the latter ~10x too fast, from the same HP
+/// scale error `stageHpScale` corrects) inflated unfarmed stages' exp/hr by up to ~78x, so the
+/// ranking reflected which stages the player had farmed, not which were actually efficient.
+async fn h_farm_rank(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let stages = read_bundled(&s, "engine/farm_stages.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let calib_doc = match read_bundled(&s, "farm-calibration.json") {
+        Some(v) => v,
+        None => return Json(json!({ "ok": false, "error": "data/farm-calibration.json missing" })),
+    };
+    let g = |path: &[&str]| -> Option<f64> {
+        let mut v = &calib_doc;
+        for p in path { v = v.get(p)?; }
+        v.as_f64()
+    };
+    let calib = farm::RankCalib {
+        stage_hp_scale: g(&["stageHpScale", "value"]).unwrap_or(10.0978),
+        per_wave_sec: g(&["clearModel", "perWaveSec"]).unwrap_or(3.342),
+        per_monster_sec: g(&["clearModel", "perMonsterSec"]).unwrap_or(0.475),
+        fitted_dps: g(&["clearModel", "fittedDps"]).unwrap_or(1321.0),
+        baseline_movement_speed: g(&["movementSpeedConfound", "avgPartyMovementSpeed", "before"]).unwrap_or(10.38),
+    };
+
+    let runs = s.meter.inner.lock().unwrap().runs.clone();
+    let mut opts = farm::AggregateOpts::default();
+    if let Some(days) = q.get("days").and_then(|v| v.parse::<f64>().ok()) {
+        if days > 0.0 { opts.max_age_ms = days * 86_400_000.0; }
+    }
+    let measured = farm::aggregate_runs_for_farm(&runs, &opts);
+    let measured_stages = measured.get("stages").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+    let mut out = farm::rank_stages(&stages, &measured_stages, &calib);
+
+    // Live check: perWaveSec was fitted at ~10.4 movement speed and is confirmed to bake that
+    // speed in (see movementSpeedConfound) — if the CURRENT party is far from it, say so rather
+    // than let the modelled numbers look just as solid as the measured ones.
+    if let Ok(list) = s.meter.read_party_stats() {
+        let speeds: Vec<f64> = list
+            .iter()
+            .filter_map(|h| h.get("stats")?.get("7")?.as_f64())
+            .filter(|v| *v > 0.0)
+            .collect();
+        if !speeds.is_empty() {
+            let avg = speeds.iter().sum::<f64>() / speeds.len() as f64;
+            let dev_pct = (avg / calib.baseline_movement_speed - 1.0) * 100.0;
+            out["currentPartyMovementSpeed"] = json!(avg);
+            out["movementSpeedDeviationPct"] = json!(dev_pct);
+            if dev_pct.abs() > 5.0 {
+                out["movementSpeedWarning"] = json!(format!(
+                    "Current party movement speed ({avg:.2}) is {dev_pct:+.1}% off the modelled \
+                     stages' calibration baseline ({:.2}) — the travel-time portion of modelled \
+                     clear times is confirmed speed-dependent but not precisely scaled yet, so \
+                     the modelled list is less trustworthy right now than usual.",
+                    calib.baseline_movement_speed
+                ));
+            }
+        }
+    }
+    Json(out)
+}
+
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.meter.runs_json())
 }
