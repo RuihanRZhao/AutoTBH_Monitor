@@ -1,7 +1,7 @@
 //! Embedded axum HTTP server on 127.0.0.1:5260. Mirrors the `/api/*` contract of the original
 //! Node backend. Serves the bundled Nuxt SPA as the static root (SPA fallback → 200.html).
 
-use crate::{currency, engine, farm, meter::Meter, pricing, save, steam, wiki};
+use crate::{currency, engine, farm, gearstats, insights, meter::Meter, pricing, save, steam, upgrades, wiki};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -243,8 +243,27 @@ async fn h_insights(State(s): State<AppState>) -> impl IntoResponse {
         Err(e) => Json(json!({ "found": true, "error": e.to_string() })),
     }
 }
-async fn h_upgrades() -> impl IntoResponse {
-    Json(json!({ "found": save::save_exists(), "enginePending": true, "slots": [] }))
+/// Per-slot gear-swap ranking. Requires the game running: the swap maths needs the modifier
+/// buckets, which only exist in the live process.
+async fn h_upgrades(State(s): State<AppState>) -> impl IntoResponse {
+    if !save::save_exists() {
+        return Json(json!({ "found": false }));
+    }
+    let gear = match gearstats::build(&s.data_dir, &s.meter).await {
+        Ok(g) => g,
+        Err(e) => return Json(json!({ "found": true, "ok": false, "error": e.to_string() })),
+    };
+    let modifiers = match s.meter.read_party_modifiers() {
+        Ok(m) => m,
+        Err(e) => {
+            return Json(json!({
+                "found": true, "ok": false, "needsGame": true, "error": e,
+            }))
+        }
+    };
+    let stage_level = insights::current_stage_level(&s.data_dir).unwrap_or(1.0);
+    let pool = json!({ "items": gear.get("pool").cloned().unwrap_or(json!([])) });
+    Json(upgrades::build(&gear, &modifiers, &pool, stage_level))
 }
 // ── Sell desk: value the stash against live BUY ORDERS ──────────────────────
 /// Fetch order books for every owned sellable item and rank them.

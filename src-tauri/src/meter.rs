@@ -545,7 +545,9 @@ impl Meter {
                 let items = match proc.list_ptrs(list, 400) { Ok(i) => i, Err(_) => continue };
                 if items.is_empty() { continue; }
                 let (mut flat, mut add, mut mul) = (Vec::new(), Vec::new(), Vec::new());
-                let mut by_source: HashMap<i64, Vec<f64>> = HashMap::new();
+                // Keep (modType, source) PAIRED. Bucketing by source alone discards which bucket
+                // each value lands in, and gear-swap reconciliation needs both together.
+                let mut mods = Vec::new();
                 for m in &items {
                     let mt = proc.read_i32(m + g("StatModifier", "MOD_TYPE")).unwrap_or(-1);
                     let v = proc.read_f32(m + g("StatModifier", "VALUE")).unwrap_or(0.0) as f64;
@@ -556,15 +558,14 @@ impl Meter {
                         2 => mul.push(v),
                         _ => continue,
                     }
-                    by_source.entry(src).or_default().push(v);
+                    mods.push(json!({ "mode": mt, "value": v, "source": src }));
                 }
-                let src_json: serde_json::Map<String, Value> =
-                    by_source.into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
                 stats.insert(
                     crate::engine::stat_name(stat_id as i64).to_string(),
                     json!({
                         "flat": flat, "additive": add, "multiplicative": mul,
-                        "count": items.len(), "bySource": src_json,
+                        "count": items.len(), "mods": mods,
+                        "statId": stat_id,
                     }),
                 );
             }

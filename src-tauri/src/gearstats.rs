@@ -256,6 +256,7 @@ pub async fn build(data_dir: &Path, meter: &crate::meter::Meter) -> anyhow::Resu
     let mut from_game = 0usize;
     let mut from_wiki = 0usize;
     let mut heroes = Vec::new();
+    let mut equipped_uids: HashSet<String> = HashSet::new();
 
     for h in as_arr(&psd["heroSaveDatas"]) {
         let hero_key = h.get("heroKey").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -276,6 +277,7 @@ pub async fn build(data_dir: &Path, meter: &crate::meter::Meter) -> anyhow::Resu
                 _ => continue,
             };
             if uid == "0" { continue; }
+            equipped_uids.insert(uid.clone());
             let item = match by_uid.get(&uid) { Some(i) => i, None => continue };
             let item_key = item.get("ItemKey").and_then(|v| v.as_i64()).unwrap_or(0);
             let row = table.get(&item_key.to_string());
@@ -342,8 +344,39 @@ pub async fn build(data_dir: &Path, meter: &crate::meter::Meter) -> anyhow::Resu
         }));
     }
 
+    // Candidate pool: every owned-but-unequipped gear item, resolved through the SAME path as the
+    // equipped ones. Gear-swap simulation compares like with like only if both sides come from the
+    // same resolver — reusing the market-facing stash shape would mix two different pipelines.
+    let mut pool = Vec::new();
+    for (uid, item) in &by_uid {
+        if equipped_uids.contains(uid) { continue; }
+        let item_key = item.get("ItemKey").and_then(|v| v.as_i64()).unwrap_or(0);
+        let row = match table.get(&item_key.to_string()) { Some(r) => r, None => continue };
+        let gear_type = row.get("GEARTYPE").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if gear_type.is_empty() { continue; }
+        let lines = match game_table.as_ref().and_then(|t| t.get(&item_key)) {
+            Some(rec) => item_lines_from_game(rec, &gear_type, &bases, &mut unmapped),
+            None => match item_lines(&detail, item_key, &gear_type, &bases, &mut unmapped) {
+                Some(w) => w,
+                None => continue,
+            },
+        };
+        let enchants = enchant_lines(item);
+        pool.push(json!({
+            "uniqueId": uid,
+            "itemKey": item_key,
+            "gearType": gear_type,
+            "grade": row.get("GRADE").cloned().unwrap_or(Value::Null),
+            "level": row.get("Level").cloned().unwrap_or(Value::Null),
+            "name": row.get("NAME").cloned().unwrap_or(Value::Null),
+            "lines": lines.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+            "enchantLines": enchants.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+        }));
+    }
+
     Ok(json!({
         "ok": true,
+        "pool": pool,
         "sourcePolicy": "game-first, wiki fallback",
         "gameTableSize": game_table.as_ref().map(|t| t.len()),
         "linesFromGame": from_game,

@@ -13,6 +13,7 @@ mod pricing;
 mod save;
 mod server;
 mod steam;
+mod upgrades;
 mod wiki;
 
 use std::path::PathBuf;
