@@ -1,0 +1,99 @@
+{
+  "_comment": [
+    "Calibration for farm ranking. Refitted from the player's own run log once enough clean",
+    "full clears accumulate; these seeds come from 253 recorded full clears across 10 stages.",
+    "A full clear means mobsKilled == totalMobs, so the measured damage covers the whole stage."
+  ],
+
+  "stageHpScale": {
+    "value": 10.0978,
+    "_comment": [
+      "data/engine/farm_stages.json totalHP is TEN TIMES the real stage HP. Divide by this.",
+      "Evidence: tableHP / measuredDamage over 10 stages spanning 560 -> 2,073,809 table HP",
+      "(a 3700x range) lands in 9.79-10.70, and the fitted single scalar leaves every stage",
+      "within 6%. The ratio does NOT track monster count (count=10 gives 10.00, count=153",
+      "gives 10.70), which rules out the alternative explanation that the meter under-counts",
+      "damage per monster. Independently corroborated by live memory: monsters on stage 1208",
+      "read HP_MAX ~710 while the table implies ~6,256 each.",
+      "Consuming totalHP raw is what makes the reference app's farm ranking wrong."
+    ],
+    "samples": 10,
+    "residualRange": [0.9437, 1.0311]
+  },
+
+  "clearModel": {
+    "_comment": [
+      "clearSec = perWave*waves + perMonster*monsters + hp/dps, with hp already descaled.",
+      "Fitted on per-stage medians so the 224 runs on stage 1206 cannot dominate the fit.",
+      "Mean absolute relative error 4.2%, worst stage 12.2%, over clear times of 41s-283s.",
+      "The two-parameter form (waves + hp only) that the reference app uses cannot fit both",
+      "ends: it lands at 14.5% mean error and overpredicts stage 1101 by 70%, because small",
+      "stages are gated by spawn pacing rather than by damage.",
+      "",
+      "CAVEAT (see movementSpeedConfound below): perWaveSec was fitted at a near-constant party",
+      "movement speed (~10.38 across all 253 source runs). It is now confirmed to be partly a",
+      "movement-speed-dependent travel term, not a true constant. Treat it as valid ONLY near",
+      "MS~10.4 until movementSpeedConfound's decomposition is calibrated with real proportions."
+    ],
+    "perWaveSec": 3.342,
+    "perMonsterSec": 0.475,
+    "fittedDps": 1321,
+    "samples": 10,
+    "meanAbsRelError": 0.042,
+    "maxAbsRelError": 0.122,
+    "fittedDpsNote": [
+      "This fitted DPS is roughly 1.8x the auto-attack DPS the engine models for the same",
+      "party (~715). The gap is skill damage, which is not yet modelled (M1.5). Prefer this",
+      "fitted value over the modelled one for clear-time prediction until skills land."
+    ]
+  },
+
+  "movementSpeedConfound": {
+    "_comment": [
+      "User's own hypothesis, tested live: is the per-wave time actually a movement/travel term",
+      "in disguise? All 253 seed runs above were logged at essentially one movement speed",
+      "(party avg 10.38, min 9.51 across 254 runs, 0.0% variation) so the flat perWaveSec fit",
+      "COULD NOT distinguish 'true constant' from 'distance / speed at speed=10.4'.",
+      "",
+      "Direct live test on stage 1301: sampled MonsterSpawnManager's alive-monster list + summed",
+      "HP every ~20-200ms for 210s (avg MS 10.38, boots equipped) and again for 260s after the",
+      "player removed all boots (avg MS 9.89, -4.7%; slowest hero -5.0%). Classified time into",
+      "'0 monsters alive' (waiting for the next spawn -- should be speed-independent) vs 'monsters",
+      "alive but no HP dropped for >1.2s' (closing distance before the party can hit anything --",
+      "should scale as 1/speed).",
+      "",
+      "RESULT:",
+      "  spawn-wait segments : 0.96s -> 0.88s  (flat within noise; NOT speed-dependent, as expected)",
+      "  travel segments      : 2.28s -> 2.54s  (+11.4%) while MS dropped 4.7%",
+      "Party DPS was ~unchanged across the two sessions (118->122, 158->161, 423->431), so the",
+      "travel-segment increase is not an artifact of the party also hitting softer.",
+      "",
+      "CONCLUSION: confirmed directionally -- part of clear time IS a movement-speed-dependent",
+      "travel term, distinct from the fixed spawn-wait timer. perWaveSec above is NOT a pure",
+      "constant; it silently bakes in MS~10.4 and will read wrong for any party whose movement",
+      "speed differs meaningfully from that.",
+      "",
+      "NOT YET RESOLVED: the exact scaling law. A naive distance/speed model predicts +4.9% for a",
+      "-4.7% speed drop; the observed +11.4% is over 2x that. Monster spawn POSITIONS are random",
+      "per session -- these two recordings are not a controlled repeat of the same path, so some",
+      "of the gap is spawn-layout variance rather than a real speed-scaling law. One before/after",
+      "pair cannot separate the two. Effective-distance check (travelSec * avgMS, which should be",
+      "a constant under a pure d/v model): 23.67 before vs 25.11 after -- a 6% mismatch, i.e. real",
+      "but modest disagreement, consistent with 'confirmed effect, imprecise magnitude'.",
+      "",
+      "TODO before trusting a fitted travel constant: repeat this instrumented sampling across",
+      "several more movement-speed levels (multiple runs per level, same stage) so spawn-position",
+      "noise averages out. Until then, farm ranking should either (a) hold perWaveSec fixed and",
+      "flag rankings as calibrated near MS~10.4 only, or (b) apply a directionally-correct but",
+      "provisional 1/speed correction and label its magnitude as unverified -- never present a",
+      "point estimate here as validated the way stageHpScale above is."
+    ],
+    "spawnWaitSec": { "before": 0.96, "after": 0.876 },
+    "travelSec": { "before": 2.28, "after": 2.539 },
+    "avgPartyMovementSpeed": { "before": 10.38, "after": 9.89 },
+    "minPartyMovementSpeed": { "before": 9.51, "after": 9.03 },
+    "predictedTravelIncreasePct_inverseSpeedModel": 4.9,
+    "observedTravelIncreasePct": 11.4,
+    "status": "direction_confirmed_magnitude_unverified"
+  }
+}

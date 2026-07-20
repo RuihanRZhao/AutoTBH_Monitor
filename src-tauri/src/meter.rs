@@ -493,10 +493,15 @@ impl Meter {
         let stage = stage_votes.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k);
         let maxes: Vec<f64> = mons.iter().filter_map(|m| m["hpMax"].as_f64()).collect();
         let avg = if maxes.is_empty() { 0.0 } else { maxes.iter().sum::<f64>() / maxes.len() as f64 };
+        // Totals, not just the sampled 12: classifying a run's idle time needs the whole field.
+        let sum_cur: f64 = mons.iter().filter_map(|m| m["hpCurrent"].as_f64()).sum();
+        let sum_max: f64 = maxes.iter().sum();
         Ok(json!({
             "ok": true,
             "stageKey": stage,
             "aliveMonsters": mons.len(),
+            "sumHpCurrent": sum_cur,
+            "sumHpMax": sum_max,
             "avgHpMax": avg,
             "minHpMax": maxes.iter().cloned().fold(f64::INFINITY, f64::min),
             "maxHpMax": maxes.iter().cloned().fold(0.0, f64::max),
