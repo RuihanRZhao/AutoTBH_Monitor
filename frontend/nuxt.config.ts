@@ -19,14 +19,21 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      // The Rust/axum backend embedded by Tauri (or run standalone).
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:5260',
+      // Same-origin by default: axum serves this SPA and its own /api/* routes, so an empty
+      // base always points at the server that shipped the page. Hardcoding a port breaks the
+      // moment TSM_PORT moves the backend — and the request then also fails CORS, since the
+      // allow-list is built from the running port.
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || '',
     },
   },
 
   i18n: {
     strategy: 'no_prefix',
     defaultLocale: 'en',
+    // Path is resolved relative to `restructureDir` (default 'i18n' in @nuxtjs/i18n v9), NOT to
+    // the project root. Pointing at './i18n.config.ts' silently resolved to a non-existent
+    // i18n/i18n.config.ts and the module fell back to an EMPTY message set with no warning —
+    // every t() call rendered its raw key. Keep this file under i18n/ so the two agree.
     vueI18n: './i18n.config.ts',
     locales: [
       { code: 'en', name: 'English' },

@@ -9,7 +9,7 @@ export default defineI18nConfig(() => ({
       app: { title: 'AutoTBH_Monitor', subtitle: 'Read-only TBH: Task Bar Hero companion' },
       nav: {
         overview: 'Overview', stash: 'Sell Desk', market: 'Market', meter: 'Live Meter', farm: 'Farm',
-        heroes: 'Heroes', runes: 'Runes', bestiary: 'Bestiary', crafting: 'Crafting',
+        heroes: 'Heroes', upgrades: 'Upgrades', runes: 'Runes', bestiary: 'Bestiary', crafting: 'Crafting',
         updates: 'Updates', settings: 'Settings',
       },
       meter: {
@@ -40,6 +40,17 @@ export default defineI18nConfig(() => ({
         needGame: 'Combat numbers need the game running — the save carries no resolved stats.',
         ehpNote: 'EHP = HP / [(1 − dodge) × (1 − armour mitigation)], measured against your current stage level.',
       },
+      upgrades: {
+        slot: 'Slot', best: 'Best swap', candidates: 'Options', stat: 'Stat',
+        ours: 'Our lines', game: 'Game modifiers', partial: 'partial',
+        noCandidate: 'nothing to swap in',
+        note: 'Deltas are simulated against stage level {stage}, using your unequipped stash items as candidates.',
+        reconciled: '{n} stats reconciled against the game',
+        unverified: 'Stats excluded — their display scale has not been verified against the game',
+        ignoredHint: 'Lines excluded from this comparison',
+        needGame: 'Swap simulation needs the game running — the modifier buckets only exist in the live process.',
+        blocked: "Swap deltas withheld: our gear lines disagree with the game's own item modifiers, so subtracting them would remove the wrong amount.",
+      },
       market: { items: 'Market items', listings: 'listings', value: 'Value' },
       stash: { title: 'Your stash', gear: 'Gear', materials: 'Materials', pending: 'Pending', unlisted: 'Unlisted' },
       bestiary: { monsters: 'Monsters', stages: 'Stages', gold: 'Gold', exp: 'EXP', life: 'Life', atk: 'ATK' },
@@ -51,7 +62,7 @@ export default defineI18nConfig(() => ({
       app: { title: 'AutoTBH_Monitor', subtitle: '只读的 TBH: Task Bar Hero 助手' },
       nav: {
         overview: '总览', stash: '出售台', market: '市场', meter: '实时面板', farm: '刷图',
-        heroes: '英雄', runes: '符文', bestiary: '图鉴', crafting: '合成',
+        heroes: '英雄', upgrades: '换装', runes: '符文', bestiary: '图鉴', crafting: '合成',
         updates: '更新', settings: '设置',
       },
       meter: {
@@ -81,6 +92,17 @@ export default defineI18nConfig(() => ({
         armorMit: '护甲减伤',
         needGame: '战力数值需要游戏运行 —— 存档里没有解析后的属性。',
         ehpNote: 'EHP = HP / [(1 − 闪避) × (1 − 护甲减伤)]，以当前所在关卡等级为基准。',
+      },
+      upgrades: {
+        slot: '槽位', best: '最佳替换', candidates: '候选数', stat: '属性',
+        ours: '我们解析的词条', game: '游戏内修饰符', partial: '部分',
+        noCandidate: '无可替换',
+        note: '以关卡等级 {stage} 为基准模拟，候选取自你仓库中未装备的装备。',
+        reconciled: '{n} 项属性已与游戏对账一致',
+        unverified: '已排除的属性 —— 其显示换算尚未与游戏核对',
+        ignoredHint: '本次比较未计入的词条',
+        needGame: '换装模拟需要游戏运行 —— 修饰符分桶只存在于运行中的进程里。',
+        blocked: '已拒绝给出换装差值：我们解析的词条与游戏自己的装备修饰符对不上，减法会减错量。',
       },
       market: { items: '市场物品', listings: '在售', value: '价值' },
       stash: { title: '你的仓库', gear: '装备', materials: '材料', pending: '待定价', unlisted: '无挂单' },

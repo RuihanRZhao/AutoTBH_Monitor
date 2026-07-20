@@ -9,6 +9,7 @@ const nav = [
   { to: '/meter', key: 'meter', ico: '📈' },
   { to: '/farm', key: 'farm', ico: '⚔️' },
   { to: '/heroes', key: 'heroes', ico: '🦸' },
+  { to: '/upgrades', key: 'upgrades', ico: '⬆️' },
   { to: '/runes', key: 'runes', ico: '🔮' },
   { to: '/bestiary', key: 'bestiary', ico: '📖' },
   { to: '/crafting', key: 'crafting', ico: '🔨' },

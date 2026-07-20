@@ -132,11 +132,19 @@ pub struct MeterInner {
 pub struct Meter {
     pub inner: Arc<Mutex<MeterInner>>,
     pub data_dir: PathBuf,
+    /// Memoised gear stat table, keyed by PE build fingerprint. The scan that produces it walks
+    /// the whole heap and takes ~80s — far too slow to sit behind a page load — but the table is
+    /// static game data, so it only has to be rebuilt when the game binary changes.
+    gear_table: Arc<Mutex<Option<(String, HashMap<i64, Vec<i32>>)>>>,
 }
 
 impl Meter {
     pub fn new(data_dir: PathBuf) -> Self {
-        let m = Self { inner: Arc::new(Mutex::new(MeterInner::default())), data_dir };
+        let m = Self {
+            inner: Arc::new(Mutex::new(MeterInner::default())),
+            data_dir,
+            gear_table: Arc::new(Mutex::new(None)),
+        };
         m.load_runs();
         m
     }
@@ -259,6 +267,15 @@ impl Meter {
         let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
             .map_err(|e| e.to_string())?;
 
+        // Keyed by build fingerprint, not just "is it cached": a game update can change the table
+        // and would otherwise be served stale values for the lifetime of the app.
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        if let Some((fp, t)) = self.gear_table.lock().unwrap().as_ref() {
+            if *fp == fingerprint {
+                return Ok(t.clone());
+            }
+        }
+
         // Only accept keys the item table knows as gear.
         let table = crate::save::item_table_snapshot();
         let valid: std::collections::HashSet<i64> = table
@@ -301,8 +318,11 @@ impl Meter {
             }
         }
         if out.is_empty() {
+            // Deliberately not cached: an empty result means the scan failed, not that the game
+            // has no gear table, and caching it would make the failure permanent.
             return Err("no gear stat records found in memory".into());
         }
+        *self.gear_table.lock().unwrap() = Some((fingerprint, out.clone()));
         Ok(out)
     }
 

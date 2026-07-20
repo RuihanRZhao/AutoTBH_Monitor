@@ -68,6 +68,17 @@ pub fn run() {
                 meter.set_enabled(true);
             }
 
+            // Warm the gear stat table off the critical path. The scan takes ~50s, and both
+            // /api/gear-lines and /api/upgrades block on it; without this the first visit to
+            // either page just hangs. Failure is expected and ignored — the game may not be
+            // running yet, in which case the request-time call retries.
+            {
+                let m = meter.clone();
+                std::thread::spawn(move || {
+                    let _ = m.read_gear_stat_table();
+                });
+            }
+
             let state = server::AppState {
                 data_dir,
                 frontend_dir,
