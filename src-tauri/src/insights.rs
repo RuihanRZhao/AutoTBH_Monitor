@@ -45,6 +45,29 @@ fn aggregate_label(t: i64) -> &'static str {
     }
 }
 
+/// Level of the content the player is currently on — the reference point our survivability
+/// metric is measured against. Stage key comes from the save (game-authoritative); the
+/// key→level mapping comes from the bundled stage table.
+pub fn current_stage_level(data_dir: &std::path::Path) -> Option<f64> {
+    let raw = save::player_save_data_string().ok()?;
+    let psd: Value = serde_json::from_str(&raw).ok()?;
+    let common = as_obj(&psd["commonSaveData"]);
+    let key = common.get("currentStageKey").and_then(|v| v.as_i64())?;
+    stage_level_for(data_dir, key)
+}
+
+/// Look up a stage's level in the bundled stage table.
+pub fn stage_level_for(data_dir: &std::path::Path, stage_key: i64) -> Option<f64> {
+    let txt = std::fs::read_to_string(data_dir.join("engine/codex.json")).ok()?;
+    let v: Value = serde_json::from_str(&txt).ok()?;
+    v.get("stages")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("key").and_then(|k| k.as_i64()) == Some(stage_key))
+        .and_then(|s| s.get("level"))
+        .and_then(|l| l.as_f64())
+}
+
 pub fn build() -> anyhow::Result<Value> {
     let raw = save::player_save_data_string()?;
     let psd: Value = serde_json::from_str(&raw)?;

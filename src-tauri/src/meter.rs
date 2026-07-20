@@ -26,8 +26,10 @@ use std::sync::{Arc, Mutex};
 pub struct Offsets {
     #[serde(default)]
     pub process: ProcessCfg,
+    /// Raw values so `_comment`/`_stride`-style annotation keys anywhere inside a class block
+    /// can't break offset loading (they did once — a doc string made the whole file unparseable).
     #[serde(default)]
-    pub game: HashMap<String, HashMap<String, i64>>,
+    pub game: HashMap<String, HashMap<String, Value>>,
     #[serde(default)]
     pub tuning: Tuning,
     /// Raw so `_comment`-style keys anywhere in the file can't break offset loading.
@@ -45,6 +47,14 @@ impl Offsets {
             .filter(|(k, _)| !k.starts_with('_'))
             .filter_map(|(k, v)| serde_json::from_value::<Calibration>(v.clone()).ok().map(|c| (k.clone(), c)))
             .collect()
+    }
+    /// Field offset for `class.field`, ignoring any annotation keys.
+    pub fn game_off(&self, class: &str, field: &str) -> usize {
+        self.game
+            .get(class)
+            .and_then(|m| m.get(field))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as usize
     }
     pub fn gold_i64(&self, key: &str, default: i64) -> i64 {
         self.gold.get(key).and_then(|v| v.as_i64()).unwrap_or(default)
@@ -260,7 +270,7 @@ impl Meter {
             .find(|(k, _)| suffix(k) == fp)
             .map(|(_, c)| c)
             .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
-        let g = |cls: &str, f: &str| cfg.game.get(cls).and_then(|m| m.get(f)).cloned().unwrap_or(0) as usize;
+        let g = |cls: &str, f: &str| cfg.game_off(cls, f);
 
         let smi = calib.indices.get("StageManager").cloned().ok_or("no StageManager index")?;
         let k = proc.class_by_type_index(calib.anchor_rva, smi).map_err(|e| e.to_string())?;
@@ -319,12 +329,7 @@ impl Meter {
         let idx = calib.indices.get("ItemInfoData").cloned().ok_or("no ItemInfoData index")?;
         let klass = proc.class_by_type_index(calib.anchor_rva, idx).map_err(|e| e.to_string())?;
         let name = proc.class_name(klass).unwrap_or_default();
-        let key_off = cfg
-            .game
-            .get("ItemInfoData")
-            .and_then(|m| m.get("ITEM_KEY"))
-            .cloned()
-            .unwrap_or(48) as usize;
+        let key_off = match cfg.game_off("ItemInfoData", "ITEM_KEY") { 0 => 48, v => v };
 
         let instances = proc.find_instances(klass, 20000);
         let mut matched = None;
@@ -425,9 +430,7 @@ impl Meter {
             }
         };
 
-        let g_off = |cls: &str, field: &str| -> usize {
-            cfg.game.get(cls).and_then(|m| m.get(field)).cloned().unwrap_or(0) as usize
-        };
+        let g_off = |cls: &str, field: &str| -> usize { cfg.game_off(cls, field) };
         let idx = |name: &str| calib.indices.get(name).cloned();
 
         // ── monsters → damage/DPS/kills ─────────────────────────────────────

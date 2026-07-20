@@ -30,6 +30,10 @@ pub struct Params {
     pub t_fixed: f64,
     pub clear_duty: f64,
     pub clear_cap: f64,
+    /// Armour-vs-content-level coefficient for our survivability metric.
+    /// FITTED (k = 13.98 / 13.83 / 14.39 across three heroes with level+gear held constant),
+    /// not a value read from the game. Lives here so it can be re-fitted as data improves.
+    pub armor_level_coeff: f64,
 }
 
 impl Default for Params {
@@ -45,6 +49,7 @@ impl Default for Params {
             t_fixed: 1.0,
             clear_duty: 0.65,
             clear_cap: 90.0,
+            armor_level_coeff: 14.07,
         }
     }
 }
@@ -199,6 +204,58 @@ pub fn ehp(max_hp: f64, mitigation: f64, p: &Params) -> f64 {
     max_hp / (1.0 - m)
 }
 
+// ── Survivability (our own metric — see the note below) ─────────────────────
+//
+// EHP is NOT a game concept: the game exposes no such value, so there is nothing to read
+// "from the game" for it. It is a derived analytic. Rather than bit-match the reference
+// implementation's EHP — whose companion DPS is provably inflated (see
+// MULTIPLICATIVE_DIVISOR_NOTE) — this defines an explicit, documented metric computed from
+// game-authoritative stats. It will NOT equal the reference's number, by design.
+//
+// Definition:
+//     damageTaken = (1 − dodge) × (1 − armourMitigation)
+//     EHP         = MaxHp / damageTaken
+//
+// Evidence behind each term:
+//  * armourMitigation = ARM / (ARM + k·stageLevel), capped at MITIG_CAP.
+//    The level scaling is empirically grounded: with hero level and gear held constant and
+//    only stageLevel changing (21→23), three independent heroes solved to k = 13.98 / 13.83 /
+//    14.39. `k` is a FITTED constant of this metric, not a value extracted from the game.
+//  * dodge is a PERCENT (÷100). Two heroes at dodge 30/31 vs one at dodge 0 differ by a factor
+//    of 0.776/1.123 ≈ 0.69 ≈ 1 − 0.30, which only works if dodge is percent, not per-mille.
+//  * DamageAbsorption is deliberately EXCLUDED. A hero with absorption 72 and one with 0 differ
+//    by 0.9887, while their dodge alone predicts 0.69/0.70 = 0.9857 — i.e. absorption has no
+//    measurable multiplicative effect here. Its mechanic is unknown, so it is left out rather
+//    than folded in with an invented weight.
+
+/// Armour → damage mitigation, relative to the level of the content being fought.
+pub fn armor_mitigation(armor: f64, stage_level: f64, p: &Params) -> f64 {
+    if armor <= 0.0 { return 0.0; }
+    let denom = armor + p.armor_level_coeff * stage_level.max(1.0);
+    if denom <= 0.0 { return 0.0; }
+    (armor / denom).clamp(0.0, p.mitig_cap)
+}
+
+/// Fraction of incoming damage actually taken, after dodge and armour.
+/// `dodge_percent` is the game's DodgeChance in percent (e.g. 30.0 == 30%).
+pub fn damage_taken_fraction(armor: f64, stage_level: f64, dodge_percent: f64, p: &Params) -> f64 {
+    let dodge = (dodge_percent / 100.0).clamp(0.0, 0.95);
+    let mitig = armor_mitigation(armor, stage_level, p);
+    ((1.0 - dodge) * (1.0 - mitig)).clamp(1e-6, 1.0)
+}
+
+/// Effective HP against content of `stage_level`, from game-authoritative stats.
+pub fn ehp_from_stats(
+    max_hp: f64,
+    armor: f64,
+    stage_level: f64,
+    dodge_percent: f64,
+    p: &Params,
+) -> f64 {
+    if max_hp <= 0.0 { return 0.0; }
+    max_hp / damage_taken_fraction(armor, stage_level, dodge_percent, p)
+}
+
 /// Recover the total mitigation implied by an observed EHP (used while fitting the armour curve).
 pub fn implied_mitigation(max_hp: f64, ehp: f64) -> f64 {
     if ehp <= 0.0 { return 0.0; }
@@ -287,6 +344,27 @@ mod tests {
         assert!((reference_as - 458.584).abs() < 1e-9, "reference AS = {reference_as}");
         // They differ by the divisor ratio on that term — this is expected, not a regression.
         assert!(reference_as > game_as * 100.0);
+    }
+
+    #[test]
+    fn survivability_metric_behaviour() {
+        let p = Params::default();
+        // Dodge is a percent: 50% dodge exactly doubles EHP at zero armour.
+        let a = ehp_from_stats(100.0, 0.0, 20.0, 0.0, &p);
+        let b = ehp_from_stats(100.0, 0.0, 20.0, 50.0, &p);
+        assert!((a - 100.0).abs() < 1e-9, "no armour, no dodge => EHP == HP, got {a}");
+        assert!((b - 200.0).abs() < 1e-9, "50% dodge doubles EHP, got {b}");
+
+        // Same armour, tougher content => strictly less EHP (the effect that was missing
+        // when the curve looked unfittable).
+        let low = ehp_from_stats(400.0, 480.0, 18.0, 0.0, &p);
+        let high = ehp_from_stats(400.0, 480.0, 23.0, 0.0, &p);
+        assert!(high < low, "higher stage level must reduce EHP: {high} !< {low}");
+
+        // Armour mitigation is capped.
+        assert!((armor_mitigation(1e9, 1.0, &p) - p.mitig_cap).abs() < 1e-9);
+        // and never negative.
+        assert!((armor_mitigation(0.0, 20.0, &p)).abs() < 1e-12);
     }
 
     #[test]

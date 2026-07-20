@@ -492,6 +492,8 @@ async fn h_meter_status(State(s): State<AppState>) -> impl IntoResponse {
 /// once the armour→mitigation curve is fitted — until then they stay null rather than guessed.
 async fn h_hero_stats(State(s): State<AppState>) -> impl IntoResponse {
     let p = engine::Params::default();
+    // Content level our survivability metric is measured against (save + bundled stage table).
+    let stage_level = crate::insights::current_stage_level(&s.data_dir).unwrap_or(1.0);
     match s.meter.read_party_stats() {
         Ok(list) => {
             let heroes: Vec<Value> = list
@@ -517,6 +519,14 @@ async fn h_hero_stats(State(s): State<AppState>) -> impl IntoResponse {
                     let (ad, as_, cc, cd) = (get(1), get(2), get(3), get(4));
                     // Game units are already normalised — no divisors.
                     let auto = engine::auto_dps_game(ad, as_, cc, cd, &p);
+                    let (max_hp, armor) = (get(5), get(6));
+                    // DodgeChance: game stores 0.031, which is 31% (not 3.1%). Go through the
+                    // verified scale table rather than a literal — the display value IS the
+                    // percent, so game 0.031 x 1000 = 31. Using x100 here silently credits only
+                    // a tenth of the hero's dodge, which is exactly the class of 10x unit slip
+                    // this codebase keeps getting bitten by.
+                    let dodge = get(16) * engine::game_to_display_scale(16).unwrap_or(1000.0);
+                    let ehp = engine::ehp_from_stats(max_hp, armor, stage_level, dodge, &p);
                     json!({
                         "heroKey": h.get("heroKey"),
                         "slot": h.get("slot"),
@@ -524,13 +534,18 @@ async fn h_hero_stats(State(s): State<AppState>) -> impl IntoResponse {
                         "statsDisplay": display_named,
                         "autoDps": auto,
                         "critMultiplier": 1.0 + cc * (cd - 1.0),
-                        "maxHp": get(5),
-                        "armor": get(6),
-                        // Null until the armour→mitigation curve is fitted — never guessed.
-                        "ehp": Value::Null,
-                        "power": Value::Null,
-                        "pending": ["skillDps", "ehp", "power"],
-                        "note": engine::MULTIPLICATIVE_DIVISOR_NOTE,
+                        "maxHp": max_hp,
+                        "armor": armor,
+                        "dodgePercent": dodge,
+                        "stageLevel": stage_level,
+                        "armorMitigation": engine::armor_mitigation(armor, stage_level, &p),
+                        "ehp": ehp,
+                        "power": engine::power(auto, ehp),
+                        "pending": ["skillDps"],
+                        "notes": {
+                            "units": engine::MULTIPLICATIVE_DIVISOR_NOTE,
+                            "ehp": "own metric from game-authoritative stats; does not match the reference implementation by design",
+                        },
                     })
                 })
                 .collect();
