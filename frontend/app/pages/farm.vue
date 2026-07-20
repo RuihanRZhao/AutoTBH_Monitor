@@ -42,6 +42,19 @@ function fmtSec(s: any) {
     <div v-else-if="err" class="state">{{ err }}</div>
 
     <template v-else-if="rank">
+      <div v-if="rank.stayVsSwitch" class="stay-box" :class="rank.stayVsSwitch.verdict">
+        <template v-if="rank.stayVsSwitch.verdict === 'stay'">
+          ✓ {{ t('farm.stay', { stage: rank.stayVsSwitch.current?.label }) }}
+        </template>
+        <template v-else-if="rank.stayVsSwitch.verdict === 'switch'">
+          → {{ t('farm.switch', { from: rank.stayVsSwitch.current?.label, to: rank.stayVsSwitch.bestMeasured?.label }) }}
+        </template>
+        <template v-else>{{ t('farm.unmeasuredCurrent') }}</template>
+        <span v-if="rank.stayVsSwitch.exploreHint" class="muted" style="display:block; font-size:11px; margin-top:4px">
+          {{ t('farm.exploreHint', { stage: rank.stayVsSwitch.exploreHint.label }) }}
+        </span>
+      </div>
+
       <p v-if="rank.movementSpeedWarning" class="warn-box">⚠ {{ rank.movementSpeedWarning }}</p>
       <p v-else-if="rank.currentPartyMovementSpeed" class="muted" style="font-size:12px; margin:-6px 0 14px">
         {{ t('farm.msNote', { ms: rank.currentPartyMovementSpeed.toFixed(2), dev: rank.movementSpeedDeviationPct.toFixed(1) }) }}
@@ -102,4 +115,10 @@ h3 { margin: 0 0 4px; }
   padding: 8px 12px; font-size: 12px; margin: 0 0 14px;
 }
 .warn-tag { border-color: var(--warn); color: var(--warn); margin-left: 4px; }
+.stay-box {
+  border: 1px solid var(--good); border-radius: 6px; padding: 8px 12px;
+  font-size: 13px; margin: 0 0 14px;
+}
+.stay-box.switch { border-color: var(--warn); }
+.stay-box.unmeasured { border-color: var(--muted, #888); color: var(--muted, #888); }
 </style>

@@ -3,6 +3,7 @@ const { t } = useI18n()
 const { get } = useApi()
 
 const ins = ref<any>(null)
+const xp = ref<any>(null)
 const loading = ref(true)
 const s = computed(() => ins.value?.insights || null)
 const meta = computed(() => s.value?.meta || null)
@@ -11,7 +12,15 @@ const liveOff = computed(() => meta.value?.combatSource && meta.value.combatSour
 async function load() {
   loading.value = true
   try { ins.value = await get('/api/insights') } catch { ins.value = null }
+  try { xp.value = await get('/api/xp-forecast') } catch { xp.value = null }
   loading.value = false
+}
+function fmtEta(sec: any) {
+  if (sec == null) return '—'
+  const d = Number(sec) / 86400
+  if (d < 1) return (Number(sec) / 3600).toFixed(1) + 'h'
+  if (d < 365) return d.toFixed(1) + 'd'
+  return (d / 365).toFixed(1) + 'y'
 }
 function num(n: any, d = 0) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d }) }
 function expShort(e: number) {
@@ -122,6 +131,30 @@ onMounted(load)
       <p v-if="s.engine?.pending" class="muted" style="margin-top:10px; font-size:12px">
         {{ t('overview.enginePending') }}: {{ s.engine.missing.join(', ') }}
       </p>
+
+      <template v-if="xp?.ok && xp.heroes?.length">
+        <h3 style="margin:20px 0 8px">{{ t('heroes.xpForecast') }}</h3>
+        <p class="muted" style="font-size:12px; margin:-4px 0 8px">
+          {{ xp.expPerSecUsed > 0 ? t('heroes.xpForecastNote') : t('heroes.xpForecastNoRate') }}
+        </p>
+        <table>
+          <thead>
+            <tr><th>{{ t('heroes.hero') }}</th><th>{{ t('heroes.level') }}</th>
+              <th v-for="lv in [20,30,50,100]" :key="lv">Lv{{ lv }}</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="h in xp.heroes" :key="h.heroKey">
+              <td>Hero {{ h.heroKey }}</td>
+              <td>{{ h.level }}</td>
+              <td v-for="lv in [20,30,50,100]" :key="lv">
+                <span v-if="lv <= h.level" class="muted">—</span>
+                <span v-else>{{ fmtEta(h.targets.find((t:any) => t.level === lv)?.etaSec) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted" style="font-size:11px; margin-top:6px">{{ xp.levelsTableSource }}</p>
+      </template>
     </template>
   </div>
 </template>

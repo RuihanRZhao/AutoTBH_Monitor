@@ -88,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/wiki-item", get(h_wiki_item))
         .route("/api/farm-calibration", get(h_farm_calibration))
         .route("/api/farm-rank", get(h_farm_rank))
+        .route("/api/xp-forecast", get(h_xp_forecast))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -105,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/debug/classscan", get(h_debug_classscan))
         .route("/api/debug/instancedump", get(h_debug_instancedump))
         .route("/api/debug/stagelogs", get(h_debug_stagelogs))
+        .route("/api/debug/logdump", get(h_debug_logdump))
         .route("/api/items", get(h_items))
         .route("/api/items-progress", get(h_items_progress))
         .route("/api/orderbook", get(h_orderbook))
@@ -227,39 +229,52 @@ async fn h_farm_calibration(State(s): State<AppState>, Query(q): Query<Q>) -> im
     Json(farm::aggregate_runs_for_farm(&runs, &opts))
 }
 
+fn load_rank_calib(s: &AppState) -> Option<farm::RankCalib> {
+    let calib_doc = read_bundled(s, "farm-calibration.json")?;
+    let g = |path: &[&str]| -> Option<f64> {
+        let mut v = &calib_doc;
+        for p in path { v = v.get(p)?; }
+        v.as_f64()
+    };
+    Some(farm::RankCalib {
+        stage_hp_scale: g(&["stageHpScale", "value"]).unwrap_or(10.0978),
+        per_wave_sec: g(&["clearModel", "perWaveSec"]).unwrap_or(3.342),
+        per_monster_sec: g(&["clearModel", "perMonsterSec"]).unwrap_or(0.475),
+        fitted_dps: g(&["clearModel", "fittedDps"]).unwrap_or(1321.0),
+        baseline_movement_speed: g(&["movementSpeedConfound", "avgPartyMovementSpeed", "before"]).unwrap_or(10.38),
+    })
+}
+
+/// The `rank_stages` output (`{measured, modelled, ...}`), shared by `/api/farm-rank` and
+/// `/api/xp-forecast` so both read the SAME `expPerSec` — with the table fallback applied for
+/// stages our own meter has no game-authoritative XP source for yet, rather than each handler
+/// picking a different (and possibly inconsistent) notion of "current exp rate".
+fn ranked_farm(s: &AppState, days: Option<f64>) -> Option<Value> {
+    let stages = read_bundled(s, "engine/farm_stages.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let calib = load_rank_calib(s)?;
+    let runs = s.meter.inner.lock().unwrap().runs.clone();
+    let mut opts = farm::AggregateOpts::default();
+    if let Some(d) = days { if d > 0.0 { opts.max_age_ms = d * 86_400_000.0; } }
+    let measured = farm::aggregate_runs_for_farm(&runs, &opts);
+    let measured_stages = measured.get("stages").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    Some(farm::rank_stages(&stages, &measured_stages, &calib))
+}
+
 /// Every stage in farm_stages.json, ranked by gold/hr and exp/hr — measured and modelled kept in
 /// separate lists (see `farm::rank_stages`). This is the fix for the confirmed EXP-farming bug:
 /// mixing measured clear times with modelled ones (the latter ~10x too fast, from the same HP
 /// scale error `stageHpScale` corrects) inflated unfarmed stages' exp/hr by up to ~78x, so the
 /// ranking reflected which stages the player had farmed, not which were actually efficient.
 async fn h_farm_rank(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
-    let stages = read_bundled(&s, "engine/farm_stages.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    let calib_doc = match read_bundled(&s, "farm-calibration.json") {
+    let days = q.get("days").and_then(|v| v.parse::<f64>().ok());
+    let calib = match load_rank_calib(&s) {
+        Some(c) => c,
+        None => return Json(json!({ "ok": false, "error": "data/farm-calibration.json missing" })),
+    };
+    let mut out = match ranked_farm(&s, days) {
         Some(v) => v,
         None => return Json(json!({ "ok": false, "error": "data/farm-calibration.json missing" })),
     };
-    let g = |path: &[&str]| -> Option<f64> {
-        let mut v = &calib_doc;
-        for p in path { v = v.get(p)?; }
-        v.as_f64()
-    };
-    let calib = farm::RankCalib {
-        stage_hp_scale: g(&["stageHpScale", "value"]).unwrap_or(10.0978),
-        per_wave_sec: g(&["clearModel", "perWaveSec"]).unwrap_or(3.342),
-        per_monster_sec: g(&["clearModel", "perMonsterSec"]).unwrap_or(0.475),
-        fitted_dps: g(&["clearModel", "fittedDps"]).unwrap_or(1321.0),
-        baseline_movement_speed: g(&["movementSpeedConfound", "avgPartyMovementSpeed", "before"]).unwrap_or(10.38),
-    };
-
-    let runs = s.meter.inner.lock().unwrap().runs.clone();
-    let mut opts = farm::AggregateOpts::default();
-    if let Some(days) = q.get("days").and_then(|v| v.parse::<f64>().ok()) {
-        if days > 0.0 { opts.max_age_ms = days * 86_400_000.0; }
-    }
-    let measured = farm::aggregate_runs_for_farm(&runs, &opts);
-    let measured_stages = measured.get("stages").and_then(|v| v.as_array().cloned()).unwrap_or_default();
-
-    let mut out = farm::rank_stages(&stages, &measured_stages, &calib);
 
     // Live check: perWaveSec was fitted at ~10.4 movement speed and is confirmed to bake that
     // speed in (see movementSpeedConfound) — if the CURRENT party is far from it, say so rather
@@ -286,7 +301,58 @@ async fn h_farm_rank(State(s): State<AppState>, Query(q): Query<Q>) -> impl Into
             }
         }
     }
+    out["stayVsSwitch"] = farm::stay_vs_switch(
+        out["measured"].as_array().cloned().unwrap_or_default().as_slice(),
+        out["modelled"].as_array().cloned().unwrap_or_default().as_slice(),
+        insights::current_stage_key(),
+    );
     Json(out)
+}
+
+/// Per-hero XP-to-milestone-level ETA, using a MEASURED exp/sec (the currently-farmed stage's if
+/// it has been recorded, else the best measured stage's, else none — see `xp_forecast`'s doc for
+/// why a modelled rate is never used here).
+async fn h_xp_forecast(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let levels_doc = read_bundled(&s, "hero-level-xp.json");
+    let levels: Vec<f64> = levels_doc
+        .as_ref()
+        .and_then(|v| v.get("levels"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+        .unwrap_or_default();
+    if levels.is_empty() {
+        return Json(json!({ "ok": false, "error": "data/hero-level-xp.json missing" }));
+    }
+
+    // Reuses /api/farm-rank's own measured list (table-fallback already applied) rather than the
+    // raw aggregation — our meter never fills RunRecord.xp, so the raw expPerSec is JSON `null`
+    // for every stage; only rank_stages's fallback-aware version is a usable exp/sec.
+    let measured_stages = ranked_farm(&s, None)
+        .and_then(|v| v.get("measured").and_then(|m| m.as_array().cloned()))
+        .unwrap_or_default();
+    let cur_key = insights::current_stage_key();
+    let eps = measured_stages
+        .iter()
+        .find(|m| m.get("stageKey").and_then(|v| v.as_i64()) == cur_key)
+        .or_else(|| {
+            measured_stages.iter().max_by(|a, b| {
+                a.get("expPerSec").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    .partial_cmp(&b.get("expPerSec").and_then(|v| v.as_f64()).unwrap_or(0.0))
+                    .unwrap()
+            })
+        })
+        .and_then(|m| m.get("expPerSec")).and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    Json(insights::xp_forecast(&psd, &levels, eps))
 }
 
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
@@ -617,6 +683,20 @@ async fn h_debug_instancedump(State(s): State<AppState>, Query(q): Query<Q>) -> 
 async fn h_debug_stagelogs(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
     let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(2000);
     match s.meter.read_stage_logs(limit) {
+        Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+/// Raw field dump of LogManager.LOG_LIST entries matching `?class=`, for probing a log type's
+/// layout the same way /api/debug/stagelogs's CLEAR_TIME offset was found.
+async fn h_debug_logdump(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let Some(class) = q.get("class") else {
+        return Json(json!({ "ok": false, "error": "missing ?class=ClassName" }));
+    };
+    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5);
+    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(96);
+    match s.meter.dump_log_entries(class, limit, window) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
     }

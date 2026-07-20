@@ -49,11 +49,16 @@ fn aggregate_label(t: i64) -> &'static str {
 /// metric is measured against. Stage key comes from the save (game-authoritative); the
 /// key→level mapping comes from the bundled stage table.
 pub fn current_stage_level(data_dir: &std::path::Path) -> Option<f64> {
+    stage_level_for(data_dir, current_stage_key()?)
+}
+
+/// The stage key the save says the player is currently on. Game-authoritative (comes straight
+/// from `commonSaveData`), used to decide which farm-rank entry is "current" for stay-vs-switch.
+pub fn current_stage_key() -> Option<i64> {
     let raw = save::player_save_data_string().ok()?;
     let psd: Value = serde_json::from_str(&raw).ok()?;
     let common = as_obj(&psd["commonSaveData"]);
-    let key = common.get("currentStageKey").and_then(|v| v.as_i64())?;
-    stage_level_for(data_dir, key)
+    common.get("currentStageKey").and_then(|v| v.as_i64())
 }
 
 /// Look up a stage's level in the bundled stage table.
@@ -323,4 +328,53 @@ pub fn build(data_dir: &std::path::Path, meter: &crate::meter::Meter) -> anyhow:
             },
         }
     }))
+}
+
+/// XP needed to reach each milestone level (20/30/50/100), and an ETA at the given exp/sec.
+///
+/// `levels_table[L-1]` is the XP needed to go from level L to L+1 (see `data/hero-level-xp.json`
+/// — wiki-sourced, not yet verified against the game; `HeroLevelUpLog` exists in
+/// `LogManager.LOG_LIST` and would give a game-authoritative version of this curve if its field
+/// layout were mapped out, same as `StageClearLog`).
+///
+/// `eps` should be a MEASURED exp/sec (from `farm::rank_stages`'s `measured` list), never a
+/// modelled one — an ETA built on a ~10x-optimistic modelled rate would be exactly the kind of
+/// confidently-wrong number the farm-ranking split was built to avoid.
+pub fn xp_forecast(psd: &Value, levels_table: &[f64], eps: f64) -> Value {
+    const TARGETS: [i64; 4] = [20, 30, 50, 100];
+    let common = as_obj(&psd["commonSaveData"]);
+    let arranged: Vec<i64> = common
+        .get("arrangedHeroKey")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).filter(|k| *k > 0).collect())
+        .unwrap_or_default();
+
+    let xp_to = |level: i64, prog: f64, target: i64| -> f64 {
+        if target <= level { return 0.0; }
+        let get = |l: i64| levels_table.get((l - 1).max(0) as usize).copied().unwrap_or(0.0);
+        let mut xp = get(level) - prog;
+        for l in (level + 1)..target { xp += get(l); }
+        xp.max(0.0)
+    };
+
+    let mut heroes = Vec::new();
+    for h in as_arr(&psd["heroSaveDatas"]) {
+        let key = i(&h, "heroKey");
+        if !arranged.contains(&key) { continue; } // benched heroes don't earn combat exp
+        let level = i(&h, "HeroLevel");
+        let prog = f(&h, "HeroExp");
+        let targets: Vec<Value> = TARGETS
+            .iter()
+            .filter(|&&t| t > level)
+            .map(|&t| {
+                let xp = xp_to(level, prog, t);
+                json!({ "level": t, "xp": xp, "etaSec": if eps > 0.0 { Some(xp / eps) } else { None } })
+            })
+            .collect();
+        heroes.push(json!({ "heroKey": key, "level": level, "exp": prog, "targets": targets }));
+    }
+    json!({
+        "ok": true, "heroes": heroes, "expPerSecUsed": eps,
+        "levelsTableSource": "TBH wiki — not yet verified against the game",
+    })
 }

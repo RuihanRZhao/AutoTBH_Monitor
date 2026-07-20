@@ -629,6 +629,55 @@ impl Meter {
         Err("memory reading is Windows-only".into())
     }
 
+    /// Dump raw f32/i32 fields for every `LogManager.LOG_LIST` entry matching `class_name`.
+    ///
+    /// Unlike `dump_instances` (a heap scan for objects matching a class pointer — which false-
+    /// positived on IL2CPP's own bookkeeping tables for `MonsterRandomSpawnData`, a value type
+    /// with no vtable header), every address here comes from a real, live `List<LogBase>` the
+    /// game itself maintains — no scanning, no ambiguity about whether a hit is a real object.
+    #[cfg(windows)]
+    pub fn dump_log_entries(&self, class_name: &str, limit: usize, window: usize) -> Result<Value, String> {
+        use crate::memory::GameProcess;
+        let cfg = self.offsets()?;
+        let proc = GameProcess::attach(&cfg.process.process_name, &cfg.process.module_name)
+            .map_err(|e| e.to_string())?;
+        let fingerprint = proc.pe_fingerprint("*").unwrap_or_default();
+        let suffix = |s: &str| s.splitn(2, '-').nth(1).unwrap_or("").to_string();
+        let fp = suffix(&fingerprint);
+        let calib = cfg.calibrations().into_iter().find(|(k, _)| suffix(k) == fp).map(|(_, c)| c)
+            .ok_or_else(|| format!("no calibration for build {fingerprint}"))?;
+
+        let i = calib.indices.get("LogManager").cloned().ok_or("no LogManager index")?;
+        let k = proc.class_by_type_index(calib.anchor_rva, i).map_err(|e| e.to_string())?;
+        let lm = proc.singleton_instance(k).map_err(|e| e.to_string())?;
+        let list = proc.read_ptr(lm + cfg.game_off("LogManager", "LOG_LIST")).unwrap_or(0);
+        let entries = proc.list_ptrs(list, 2000).unwrap_or_default();
+
+        let mut dumps = Vec::new();
+        for e in entries.iter().rev() {
+            let cls = proc.read_ptr(*e).unwrap_or(0);
+            let name = proc.class_name(cls).unwrap_or_default();
+            if name != class_name { continue; }
+            let buf = proc.read_bytes(*e, window).unwrap_or_default();
+            let mut fields = Vec::new();
+            for off in (0..buf.len().saturating_sub(3)).step_by(4) {
+                let b: [u8; 4] = buf[off..off + 4].try_into().unwrap();
+                fields.push(json!({
+                    "off": format!("0x{off:x}"),
+                    "f32": f32::from_le_bytes(b), "i32": i32::from_le_bytes(b),
+                }));
+            }
+            dumps.push(json!({ "addr": format!("0x{e:x}"), "fields": fields }));
+            if dumps.len() >= limit { break; }
+        }
+        Ok(json!({ "ok": true, "class": class_name, "matched": dumps.len(), "instances": dumps }))
+    }
+
+    #[cfg(not(windows))]
+    pub fn dump_log_entries(&self, _class_name: &str, _limit: usize, _window: usize) -> Result<Value, String> {
+        Err("memory reading is Windows-only".into())
+    }
+
     /// Dump live monsters' current/max HP straight from the game.
     /// Settles whether a stage table's totalHP is on the same scale as what the game actually
     /// spawns — the game is the authority for numeric parameters.

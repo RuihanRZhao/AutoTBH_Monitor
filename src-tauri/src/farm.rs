@@ -213,16 +213,22 @@ pub fn rank_stages(stages: &[Value], measured: &[Value], calib: &RankCalib) -> V
                 (Some(a), Some(b)) if b > 0.0 => ((a - b).abs() / b) > 0.25,
                 _ => false,
             };
+            // Our own meter never fills RunRecord.xp (no game-authoritative source hooked up
+            // yet), so `m.get("expPerSec")` is present but JSON `null` — NOT absent. `.unwrap_or`
+            // only falls back on a missing KEY, not a null VALUE, so a naive
+            // `.cloned().unwrap_or(fallback)` here would silently keep serialising `null`
+            // forever instead of ever reaching the table fallback below.
+            let measured_exp_per_sec = m.get("expPerSec").and_then(|v| v.as_f64());
+            let table_exp_per_sec = if expected_exp > 0.0 { Some(expected_exp / clear_sec) } else { None };
+            let gold_per_sec = measured_gold_per_sec.or(table_gold_per_sec);
+            let exp_per_sec = measured_exp_per_sec.or(table_exp_per_sec);
             measured_out.push(json!({
                 "stageKey": key, "label": label,
                 "source": "measured", "n": m.get("n").cloned().unwrap_or(Value::Null),
                 "clearSec": clear_sec,
-                "goldPerSec": measured_gold_per_sec.or(table_gold_per_sec),
-                "expPerSec": m.get("expPerSec").cloned().unwrap_or(json!(
-                    if expected_exp > 0.0 { expected_exp / clear_sec } else { 0.0 }
-                )),
-                "goldPerHour": measured_gold_per_sec.or(table_gold_per_sec).map(|g| g * 3600.0),
-                "expPerHour": (if expected_exp > 0.0 { expected_exp / clear_sec } else { 0.0 }) * 3600.0,
+                "goldPerSec": gold_per_sec, "expPerSec": exp_per_sec,
+                "goldPerHour": gold_per_sec.map(|g| g * 3600.0),
+                "expPerHour": exp_per_sec.map(|e| e * 3600.0),
                 "tableGoldDisagreesWithMeasured": gold_disagrees,
             }));
         } else {
@@ -260,6 +266,39 @@ pub fn rank_stages(stages: &[Value], measured: &[Value], calib: &RankCalib) -> V
             only near the calibration's baseline party movement speed. Never compare its \
             goldPerHour/expPerHour directly against the measured list.",
         "calibBaselineMovementSpeed": calib.baseline_movement_speed,
+    })
+}
+
+/// Should the player keep farming `current_key` or switch? The decision ONLY ever compares
+/// measured entries against other measured entries — never against the modelled list, for the
+/// same reason `rank_stages` keeps the two apart. A separate, clearly-labelled "if you want to
+/// explore" hint points at the modelled frontier, but never feeds the stay/switch verdict itself.
+///
+/// Sorts both lists itself rather than trusting the caller to have passed them in exp/hr order —
+/// `rank_stages` already returns them sorted, but "best" silently meaning "first" is the kind of
+/// implicit precondition that breaks quietly the moment either list is built a different way.
+pub fn stay_vs_switch(measured: &[Value], modelled: &[Value], current_key: Option<i64>) -> Value {
+    let exp_hr = |v: &&Value| v["expPerHour"].as_f64().unwrap_or(0.0);
+    let best_measured = measured.iter().max_by(|a, b| exp_hr(a).partial_cmp(&exp_hr(b)).unwrap());
+    let current_measured = current_key.and_then(|k| measured.iter().find(|r| r["stageKey"].as_i64() == Some(k)));
+    let best_modelled = modelled.iter().max_by(|a, b| exp_hr(a).partial_cmp(&exp_hr(b)).unwrap());
+
+    let verdict = match (current_measured, best_measured) {
+        (Some(cur), Some(best)) if cur["stageKey"] == best["stageKey"] => "stay",
+        (Some(_), Some(_)) => "switch",
+        // No measured data at all (current stage, or anywhere) — nothing to judge yet.
+        (None, _) | (_, None) => "unmeasured",
+    };
+
+    json!({
+        "ok": true,
+        "verdict": verdict,
+        "current": current_measured,
+        "bestMeasured": best_measured,
+        "exploreHint": best_modelled.map(|m| json!({
+            "stageKey": m["stageKey"], "label": m["label"], "expPerHour": m["expPerHour"],
+            "caveat": "Modelled, not measured — farm it a few times before trusting this number.",
+        })),
     })
 }
 
@@ -303,5 +342,29 @@ mod tests {
         assert_eq!(d, vec![1102]);
         // No stage may appear in both.
         assert!(m.iter().all(|k| !d.contains(k)));
+    }
+
+    #[test]
+    fn stay_vs_switch_never_compares_across_lists() {
+        let measured = vec![
+            json!({ "stageKey": 1101, "expPerHour": 1000.0 }),
+            json!({ "stageKey": 1102, "expPerHour": 2000.0 }),
+        ];
+        let modelled = vec![json!({ "stageKey": 1103, "label": "1-3", "expPerHour": 999_999.0 })];
+
+        // Currently farming the WORSE measured stage: must recommend switching to the better
+        // MEASURED one, never to the modelled stage even though its number looks huge.
+        let out = stay_vs_switch(&measured, &modelled, Some(1101));
+        assert_eq!(out["verdict"], json!("switch"));
+        assert_eq!(out["bestMeasured"]["stageKey"], json!(1102));
+        assert_eq!(out["exploreHint"]["stageKey"], json!(1103)); // present, but separate
+
+        // Currently on the best measured stage: stay.
+        let out2 = stay_vs_switch(&measured, &modelled, Some(1102));
+        assert_eq!(out2["verdict"], json!("stay"));
+
+        // No measured data for the current stage at all: don't pretend to judge it.
+        let out3 = stay_vs_switch(&measured, &modelled, Some(9999));
+        assert_eq!(out3["verdict"], json!("unmeasured"));
     }
 }
