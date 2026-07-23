@@ -602,3 +602,159 @@ pub fn push_goal(data_dir: &std::path::Path, meter: &crate::meter::Meter, psd: &
                  ~10x inflation as the stage-HP table).",
     })
 }
+
+/// The game's 10 item grades in ascending order. Synthesis promotes to the NEXT one up.
+const GRADE_ORDER: [&str; 10] = [
+    "COMMON", "UNCOMMON", "RARE", "LEGENDARY", "IMMORTAL",
+    "ARCANA", "BEYOND", "CELESTIAL", "DIVINE", "COSMIC",
+];
+
+fn grade_rank(g: &str) -> Option<usize> {
+    GRADE_ORDER.iter().position(|x| x.eq_ignore_ascii_case(g))
+}
+
+/// Synthesis planner: the game fuses 9 same-grade items into one of the next grade up
+/// (`crafting.json` cubeInfo: "Synthesize 9 items of the same grade into one of a higher grade").
+///
+/// This is fully save-derived — item grade comes from the game's own item table, and the 9→1 rule
+/// is the game's stated mechanic, so no wiki numeric parameter is guessed at. Equipped items are
+/// excluded (you would not fuse away what you are wearing). It also projects a full CASCADE: the
+/// items you'd get from fusing a grade can themselves be fused, so "27 COMMON" surfaces as 3
+/// UNCOMMON now and notes the cascade potential without pretending the higher-grade drops are free.
+pub fn synthesis_plan(psd: &Value) -> Value {
+    let table = crate::save::item_table_snapshot();
+
+    // UniqueIds currently equipped by any hero — never counted as fusible.
+    let mut equipped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for h in as_arr(&psd["heroSaveDatas"]) {
+        for id in h.get("equippedItemIds").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+            match id {
+                Value::Number(n) => { equipped.insert(n.to_string()); }
+                Value::String(s) => { equipped.insert(s.clone()); }
+                _ => {}
+            }
+        }
+    }
+
+    // Count unequipped items per grade (only items the table knows a grade for).
+    let mut by_grade: HashMap<usize, i64> = HashMap::new();
+    let mut ungraded = 0i64;
+    for it in as_arr(&psd["itemSaveDatas"]) {
+        let uid = match &it["UniqueId"] {
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
+        if uid == "0" || equipped.contains(&uid) { continue; }
+        let item_key = it.get("ItemKey").and_then(|v| v.as_i64()).unwrap_or(0);
+        let grade = table.get(&item_key.to_string())
+            .and_then(|r| r.get("GRADE")).and_then(|v| v.as_str());
+        match grade.and_then(grade_rank) {
+            Some(r) => *by_grade.entry(r).or_insert(0) += 1,
+            None => ungraded += 1,
+        }
+    }
+
+    // Immediate fusions per grade (floor(count / 9)); the top grade can't promote.
+    let mut rows = Vec::new();
+    for r in 0..GRADE_ORDER.len() {
+        let count = by_grade.get(&r).copied().unwrap_or(0);
+        if count == 0 { continue; }
+        let fuses = if r + 1 < GRADE_ORDER.len() { count / 9 } else { 0 };
+        rows.push(json!({
+            "grade": GRADE_ORDER[r],
+            "have": count,
+            "fusable": r + 1 < GRADE_ORDER.len(),
+            "fusesNow": fuses,
+            "producesGrade": (r + 1 < GRADE_ORDER.len()).then(|| GRADE_ORDER[r + 1]),
+            "leftover": count % 9,
+        }));
+    }
+
+    // Cascade: simulate repeatedly fusing 9→1 up the chain, so the player sees the eventual top
+    // grade reachable purely from what they already own, without conflating it with drops.
+    let mut cascade = by_grade.clone();
+    let mut cascade_moves = 0i64;
+    loop {
+        let mut promoted = false;
+        for r in 0..GRADE_ORDER.len() - 1 {
+            let c = cascade.get(&r).copied().unwrap_or(0);
+            if c >= 9 {
+                let f = c / 9;
+                *cascade.entry(r).or_insert(0) -= f * 9;
+                *cascade.entry(r + 1).or_insert(0) += f;
+                cascade_moves += f;
+                promoted = true;
+            }
+        }
+        if !promoted { break; }
+    }
+    let cascade_top = cascade.iter().filter(|(_, &c)| c > 0).map(|(&r, _)| r).max();
+
+    json!({
+        "ok": true,
+        "rule": "9 same-grade items fuse into 1 of the next grade",
+        "rows": rows,
+        "ungradedItems": ungraded,
+        "cascade": {
+            "totalFuses": cascade_moves,
+            "topGradeReachable": cascade_top.map(|r| GRADE_ORDER[r]),
+            "note": "If you fused everything upward as far as it goes (each 9→1, repeatedly). \
+                     Higher-grade results are NOT free drops — this only counts what you already own.",
+        },
+    })
+}
+
+/// Alchemy value of unequipped items: total sell gold + total cube EXP if you converted every
+/// loose item. `alchemy_table` is `data/item-alchemy.json` (wiki, not game-verified — see that
+/// file). Equipped items are excluded. Also breaks the sell gold down by grade so a player can
+/// see whether it's worth alchemising low grades vs saving them to synthesise.
+pub fn alchemy_value(psd: &Value, alchemy_table: &Value) -> Value {
+    let table = crate::save::item_table_snapshot();
+    let sell = alchemy_table.get("sell");
+    let cube = alchemy_table.get("cubeExp");
+
+    let mut equipped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for h in as_arr(&psd["heroSaveDatas"]) {
+        for id in h.get("equippedItemIds").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+            match id {
+                Value::Number(n) => { equipped.insert(n.to_string()); }
+                Value::String(s) => { equipped.insert(s.clone()); }
+                _ => {}
+            }
+        }
+    }
+
+    let (mut sell_gold, mut cube_exp, mut count, mut priced) = (0i64, 0i64, 0i64, 0i64);
+    let mut by_grade: HashMap<String, i64> = HashMap::new();
+    for it in as_arr(&psd["itemSaveDatas"]) {
+        let uid = match &it["UniqueId"] {
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => s.clone(),
+            _ => continue,
+        };
+        if uid == "0" || equipped.contains(&uid) { continue; }
+        let key = it.get("ItemKey").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
+        count += 1;
+        if let Some(g) = sell.and_then(|s| s.get(&key)).and_then(|v| v.as_i64()) {
+            sell_gold += g;
+            priced += 1;
+            let grade = table.get(&key).and_then(|r| r.get("GRADE")).and_then(|v| v.as_str()).unwrap_or("?");
+            *by_grade.entry(grade.to_string()).or_insert(0) += g;
+        }
+        if let Some(e) = cube.and_then(|c| c.get(&key)).and_then(|v| v.as_i64()) {
+            cube_exp += e;
+        }
+    }
+
+    json!({
+        "ok": true,
+        "looseItems": count,
+        "pricedItems": priced,
+        "unpricedItems": count - priced,
+        "sellGold": sell_gold,
+        "cubeExp": cube_exp,
+        "sellGoldByGrade": by_grade,
+        "source": "wiki — not game-verified",
+    })
+}

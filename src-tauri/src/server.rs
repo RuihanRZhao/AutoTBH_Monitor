@@ -91,6 +91,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/xp-forecast", get(h_xp_forecast))
         .route("/api/idle", get(h_idle))
         .route("/api/goal", get(h_goal))
+        .route("/api/crafting-plan", get(h_crafting_plan))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -119,8 +120,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/resolve-hash", get(h_resolve_hash))
         .route("/api/updates", get(h_updates))
         .fallback_service(static_svc)
-        // Only our own window may call this API. `permissive()` let ANY page the user had open
-        // read their save-derived stash and POST /api/runs/reset.
+        // Server-side Origin guard. CORS alone is NOT protection: it only stops cross-origin JS
+        // from READING responses — the browser still SENDS the request, so a malicious page the
+        // user has open could fire `/api/runs/reset`, the `/api/debug/*` memory probes, or a
+        // Steam-fetch trigger cross-origin and have them execute server-side. This middleware
+        // rejects any request that carries a foreign `Origin` header outright, so those never run.
+        // (Same-origin requests from our own window send our Origin or none — both pass.)
+        .layer(axum::middleware::from_fn(origin_guard))
+        // CORS still declared so the browser is happy about same-origin XHR; the guard above is
+        // the actual security boundary.
         .layer(
             CorsLayer::new()
                 .allow_origin(
@@ -134,6 +142,25 @@ pub fn router(state: AppState) -> Router {
                 .allow_headers(tower_http::cors::Any),
         )
         .with_state(state)
+}
+
+/// Reject any request whose `Origin` header names a site other than our own localhost window.
+/// A cross-origin `fetch` (even `mode:'no-cors'`) always carries an `Origin` header, so this
+/// catches the CSRF-style attacks CORS does not. Requests with no `Origin` (same-origin GETs,
+/// direct navigations, non-browser clients) pass — they cannot be forged by a foreign web page.
+async fn origin_guard(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(origin) = req.headers().get(axum::http::header::ORIGIN) {
+        let ok = origin.to_str().map(|o| {
+            o == format!("http://localhost:{}", port()) || o == format!("http://127.0.0.1:{}", port())
+        }).unwrap_or(false);
+        if !ok {
+            return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
+        }
+    }
+    next.run(req).await
 }
 
 // ── Bundled / offline data ──────────────────────────────────────────────────
@@ -224,7 +251,7 @@ async fn h_stash_tabs() -> impl IntoResponse {
 }
 /// Farm calibration from the built-in meter's recorded runs.
 async fn h_farm_calibration(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
-    let runs = s.meter.inner.lock().unwrap().runs.clone();
+    let runs = s.meter.lock().runs.clone();
     let mut opts = farm::AggregateOpts::default();
     if let Some(days) = q.get("days").and_then(|v| v.parse::<f64>().ok()) {
         if days > 0.0 { opts.max_age_ms = days * 86_400_000.0; }
@@ -255,7 +282,7 @@ fn load_rank_calib(s: &AppState) -> Option<farm::RankCalib> {
 fn ranked_farm(s: &AppState, days: Option<f64>) -> Option<Value> {
     let stages = read_bundled(s, "engine/farm_stages.json").and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let calib = load_rank_calib(s)?;
-    let runs = s.meter.inner.lock().unwrap().runs.clone();
+    let runs = s.meter.lock().runs.clone();
     let mut opts = farm::AggregateOpts::default();
     if let Some(d) = days { if d > 0.0 { opts.max_age_ms = d * 86_400_000.0; } }
     let measured = farm::aggregate_runs_for_farm(&runs, &opts);
@@ -421,6 +448,25 @@ async fn h_goal(State(s): State<AppState>) -> impl IntoResponse {
         Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
     };
     Json(insights::push_goal(&s.data_dir, &s.meter, &psd))
+}
+
+/// Synthesis (9-same-grade → next grade) + alchemy (sell/cube value) planning for loose items.
+/// Synthesis is fully save-derived; alchemy values are wiki-sourced (flagged in the payload).
+async fn h_crafting_plan(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let synthesis = insights::synthesis_plan(&psd);
+    let alchemy = match read_bundled(&s, "item-alchemy.json") {
+        Some(t) => insights::alchemy_value(&psd, &t),
+        None => json!({ "ok": false, "error": "data/item-alchemy.json missing" }),
+    };
+    Json(json!({ "ok": true, "synthesis": synthesis, "alchemy": alchemy }))
 }
 
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
@@ -733,7 +779,7 @@ async fn h_debug_classscan(State(s): State<AppState>, Query(q): Query<Q>) -> imp
     if needles.is_empty() {
         return Json(json!({ "ok": false, "error": "missing ?q=needle1,needle2" }));
     }
-    let max_index: usize = q.get("max").and_then(|v| v.parse().ok()).unwrap_or(60_000);
+    let max_index: usize = q.get("max").and_then(|v| v.parse().ok()).unwrap_or(60_000).min(200_000);
     match s.meter.scan_classes(&needles, max_index) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
@@ -746,8 +792,8 @@ async fn h_debug_instancedump(State(s): State<AppState>, Query(q): Query<Q>) -> 
     let Some(ty) = q.get("type").and_then(|v| v.parse::<usize>().ok()) else {
         return Json(json!({ "ok": false, "error": "missing ?type=<typeIndex>" }));
     };
-    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5);
-    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(128);
+    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5).min(64);
+    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(128).min(4096);
     match s.meter.dump_instances(ty, limit, window) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),
@@ -769,8 +815,8 @@ async fn h_debug_logdump(State(s): State<AppState>, Query(q): Query<Q>) -> impl 
     let Some(class) = q.get("class") else {
         return Json(json!({ "ok": false, "error": "missing ?class=ClassName" }));
     };
-    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5);
-    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(96);
+    let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(5).min(64);
+    let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(96).min(4096);
     match s.meter.dump_log_entries(class, limit, window) {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e })),

@@ -2,14 +2,18 @@
  "_comment": [
   "Level tables for the 8 offline-reward runes (OfflineRewardGoldPercent /",
   "OfflineRewardExpPercent stat rows) plus the Rune of Repose (11001) that unlocks offline",
-  "rewards at all. Source: TBH wiki. Narrow, targeted extraction for idleInfo only -- NOT a",
-  "general rune-tree data port (that is separate future scope, M4).",
+  "rewards at all. Source: TBH wiki. Narrow, targeted extraction for idleInfo only.",
   "",
-  "UNITS: each level row v is in PERCENT (v=100 => +100% offline reward), summed across all owned",
-  "levels then divided by 100 in insights::idle_info -- matches the reference app exactly. Do NOT",
-  "confuse this with the per-mille (/1000) convention used by combat stat modifiers; this table",
-  "is genuinely percent. Verified against the reference: player with 6 combined gold-rune levels",
-  "yields goldBonus 6.0 (=600%), consistent with the in-game +100%/level design."
+  "UNITS — v is in PERCENT, converted via /100 in insights::idle_info (v=100 => +100% => x1.0",
+  "bonus fraction). Evidence this is /100 not /1000: the stat is literally named",
+  "\"OfflineRewardGoldPercent\" (the \"Percent\" suffix means v is already a percent value), and",
+  "v=100 uniform per level reads as +100%/level for a dedicated offline-reward rune (max 3-5",
+  "levels each), a normal idle-game magnitude. Contrast combat runes like AllHeroAttackSpeed",
+  "v=10 (no \"Percent\" suffix, small per-mille buff) — a different stat family with a different",
+  "scale. An automated audit flagged /100 as a possible 10x error; the \"Percent\" stat name is",
+  "the counter-evidence. STILL not confirmed by a live reading (offline reward is not a combat",
+  "stat, so it is absent from FINAL_STATS / the modifier manager). Full confirmation would need",
+  "comparing a real pending offline-reward gold amount against this table x (1 + sum(v)/100)."
  ],
  "goldRuneKeys": [
   110011,

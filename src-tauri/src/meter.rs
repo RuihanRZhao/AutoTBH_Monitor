@@ -175,7 +175,7 @@ impl Meter {
     fn load_runs(&self) {
         if let Ok(txt) = std::fs::read_to_string(self.runs_path()) {
             if let Ok(v) = serde_json::from_str::<Vec<RunRecord>>(&txt) {
-                self.inner.lock().unwrap().runs = v;
+                self.lock().runs = v;
             }
         }
     }
@@ -190,7 +190,7 @@ impl Meter {
     /// `live.json` is small and written every tick. `runs.json` is only rewritten when a run
     /// actually closed — it used to be re-serialized in full 10x/second.
     fn persist(&self, runs_changed: bool) {
-        let g = self.inner.lock().unwrap();
+        let g = self.lock();
         if runs_changed {
             if let Ok(s) = serde_json::to_string(&g.runs) { Self::write_atomic(&self.runs_path(), &s); }
         }
@@ -200,7 +200,7 @@ impl Meter {
     }
 
     pub fn status(&self) -> Value {
-        let g = self.inner.lock().unwrap();
+        let g = self.lock();
         json!({
             "enabled": g.enabled, "attached": g.attached, "error": g.error,
             "runCount": g.runs.len(),
@@ -211,7 +211,7 @@ impl Meter {
     }
 
     pub fn live_json(&self) -> Value {
-        let g = self.inner.lock().unwrap();
+        let g = self.lock();
         match &g.live {
             Some(l) => json!({ "ok": true, "at": l.ts, "live": l }),
             None => json!({ "ok": false, "enabled": g.enabled, "attached": g.attached, "error": g.error }),
@@ -219,14 +219,14 @@ impl Meter {
     }
 
     pub fn runs_json(&self) -> Value {
-        let g = self.inner.lock().unwrap();
+        let g = self.lock();
         let mut runs = g.runs.clone();
         runs.sort_by(|a, b| b.ts.partial_cmp(&a.ts).unwrap());
         json!({ "ok": true, "runs": runs })
     }
 
     pub fn reset_runs(&self) -> Value {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.lock();
         let total = g.runs.len();
         let ts = now_ms() as i64;
         let dir = self.data_dir.join(format!("meter/archive/{ts}"));
@@ -826,7 +826,16 @@ impl Meter {
         Err("memory reading is Windows-only".into())
     }
 
-    pub fn set_enabled(&self, on: bool) { self.inner.lock().unwrap().enabled = on; }
+    /// Poison-tolerant lock on the shared meter state. If any thread ever panics while holding
+    /// this lock (e.g. a bad memory read in the sampler), a plain `.lock().unwrap()` would poison
+    /// the mutex and every subsequent API request that locks it would panic too — silently killing
+    /// live metering AND returning 500s across the whole API. Recovering the inner data instead
+    /// keeps both alive; the worst case is one lost sample, not a permanent outage.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, MeterInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_enabled(&self, on: bool) { self.lock().enabled = on; }
 
     pub fn offsets(&self) -> Result<Offsets, String> {
         let p = self.offsets_path();
@@ -1003,7 +1012,7 @@ impl Meter {
         let (build_id, calib) = match calib {
             Some((k, c)) => (k, c),
             None => {
-                let mut g = self.inner.lock().unwrap();
+                let mut g = self.lock();
                 g.attached = true;
                 g.error = Some(format!(
                     "attached, but no calibration for this game build ({fingerprint}) — add its anchor_rva + type indices to data/meter-offsets.json"
@@ -1102,7 +1111,7 @@ impl Meter {
         // thread is the only writer, so a stale read here just means we redecode a couple of
         // already-seen entries next tick, never lose or duplicate a record).
         let (log_tail_before, log_seeded_before) = {
-            let g = self.inner.lock().unwrap();
+            let g = self.lock();
             (g.log_tail.clone(), g.log_seeded)
         };
         const LOG_TAIL_WINDOW: usize = 64;
@@ -1161,7 +1170,7 @@ impl Meter {
 
         // ── fold into state ─────────────────────────────────────────────────
         let ts = now_ms();
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.lock();
         g.attached = true;
         g.error = None;
 
@@ -1281,7 +1290,7 @@ impl Meter {
     fn sample_once(&self) { self.fail("the live meter is Windows-only"); }
 
     fn fail(&self, msg: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.lock();
         g.attached = false;
         g.error = Some(msg.to_string());
         g.live = None;
