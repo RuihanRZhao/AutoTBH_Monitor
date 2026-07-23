@@ -331,10 +331,12 @@ pub fn build(data_dir: &std::path::Path, meter: &crate::meter::Meter) -> anyhow:
             },
             // Explicitly NOT guessed: these need the game's simulation engine.
             // dps/ehp/power now land on each hero (live game) and in `meta`.
+            // farmClearTimeModel (/api/farm-rank), upgradeFinder (/api/upgrades) and gear scoring
+            // (/api/gear-lines + /api/upgrades) are DONE — only skill DPS remains unmodelled.
             "engine": {
                 "pending": true,
-                "missing": ["skillDps", "gearScoring", "farmClearTimeModel", "upgradeFinder"],
-                "note": "hero dps/ehp/power require the game running; the save carries no resolved stats",
+                "missing": ["skillDps"],
+                "note": "skill damage is not yet modelled (no game-verified skill table); it is why                          the fitted farm DPS runs ~1.8x the auto-attack DPS. The clear-time model,                          gear scoring and upgrade finder the original gated behind its JS engine are                          now ported and game-grounded.",
             },
         }
     }))

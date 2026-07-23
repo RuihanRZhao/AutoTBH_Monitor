@@ -2,9 +2,11 @@
 const { t } = useI18n()
 const { get } = useApi()
 
+const { locale } = useI18n()
 const version = ref<any>(null)
 const stash = ref<any>(null)
 const ins = ref<any>(null)
+const pets = ref<any>(null)
 const loading = ref(true)
 
 const s = computed(() => ins.value?.insights || null)
@@ -12,17 +14,20 @@ const cur = computed(() => stash.value?.currency || { symbol: '', decimals: 2 })
 
 async function load() {
   loading.value = true
-  const [v, st, i] = await Promise.allSettled([
+  const [v, st, i, p] = await Promise.allSettled([
     get('/api/version'),
     get('/api/stash', { appid: 3678970 }),
     get('/api/insights'),
+    get('/api/pets'),
   ])
   version.value = v.status === 'fulfilled' ? v.value : null
   stash.value = st.status === 'fulfilled' ? st.value : null
   ins.value = i.status === 'fulfilled' ? i.value : null
+  pets.value = p.status === 'fulfilled' ? p.value : null
   loading.value = false
 }
 function num(n: any) { return n == null ? '—' : Number(n).toLocaleString() }
+function nm(o: any) { return o?.[locale.value] || o?.['en-US'] || o }
 onMounted(load)
 </script>
 
@@ -88,6 +93,10 @@ onMounted(load)
         <div class="card">
           <div class="k">{{ t('overview.pets') }}</div>
           <div class="v">{{ s.pets.unlocked }}/{{ s.pets.total }}</div>
+          <div v-if="pets?.ok && pets.bestExp" class="muted" style="font-size:11px">
+            ★ {{ nm(pets.bestExp.name) }}
+            <span v-if="pets.nextUnlock"> · {{ t('overview.petNext') }} {{ nm(pets.nextUnlock.name) }}</span>
+          </div>
         </div>
         <div class="card">
           <div class="k">{{ t('overview.attributes') }}</div>

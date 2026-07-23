@@ -28,7 +28,7 @@ export default defineI18nConfig(() => ({
         bestMove: 'Best next move', stashValue: 'Stash value', items: 'Items', priced: 'Priced',
         gold: 'Gold', stage: 'Stage', playtime: 'Play time', party: 'Party', gear: 'Gear',
         points: 'Points', totalLevels: 'Total levels', pets: 'Pets', attributes: 'Attributes',
-        nodes: 'nodes', storage: 'Stash slots', bag: 'Bag', lifetime: 'Lifetime stats',
+        nodes: 'nodes', storage: 'Stash slots', bag: 'Bag', lifetime: 'Lifetime stats', petNext: 'next:',
         enginePending: 'Needs the simulation engine (not yet ported)',
       },
       heroes: {
@@ -121,7 +121,7 @@ export default defineI18nConfig(() => ({
         bestMove: '下一步最佳操作', stashValue: '仓库价值', items: '物品', priced: '已定价',
         gold: '金币', stage: '当前关卡', playtime: '游戏时长', party: '出战队伍', gear: '装备',
         points: '天赋点', totalLevels: '总等级', pets: '宠物', attributes: '天赋',
-        nodes: '项', storage: '仓库格', bag: '背包', lifetime: '生涯统计',
+        nodes: '项', storage: '仓库格', bag: '背包', lifetime: '生涯统计', petNext: '下个:',
         enginePending: '以下能力需要模拟引擎（尚未移植）',
       },
       heroes: {
