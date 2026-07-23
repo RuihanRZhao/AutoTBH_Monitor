@@ -986,3 +986,71 @@ pub fn rune_status(psd: &Value, runes_table: &Value, gold: i64) -> Value {
                  Cheapest affordable upgrades are listed first; combat runes are flagged.",
     })
 }
+
+/// Loot finder: which gear a stage of the given level can drop, and at what chance.
+///
+/// A stage drops the "box" of its 5-level band. `drops_table` is `data/drops.json`
+/// (`boxDrops[band]` = weighted `[groupKey, weight, subType]` rows; `dropGroups[group]` = item
+/// keys). An item's chance in a band = Σ over groups containing it of (weight / groupSize),
+/// divided by the band's total weight.
+///
+/// Drop chances are inherently wiki data — they are RNG tables the game never exposes, so unlike
+/// stat/HP values there is nothing to read from memory to verify them. Flagged accordingly. Item
+/// grade/type/name come from the game item table (authoritative for those).
+pub fn loot_finder(stage_level: f64, drops_table: &Value, top_n: usize) -> Value {
+    let box_drops = drops_table.get("boxDrops").and_then(|v| v.as_object());
+    let groups = drops_table.get("dropGroups").and_then(|v| v.as_object());
+    let (Some(box_drops), Some(groups)) = (box_drops, groups) else {
+        return json!({ "ok": false, "error": "drops.json malformed" });
+    };
+
+    // Band = largest band key <= stage level.
+    let lvl = stage_level.floor().max(1.0) as i64;
+    let band = box_drops.keys().filter_map(|k| k.parse::<i64>().ok())
+        .filter(|b| *b <= lvl).max();
+    let Some(band) = band else { return json!({ "ok": false, "error": "no drop band for this level" }); };
+
+    let rows = box_drops.get(&band.to_string()).and_then(|v| v.as_array());
+    let Some(rows) = rows else { return json!({ "ok": false, "error": "band has no rows" }); };
+
+    let total_weight: f64 = rows.iter().filter_map(|r| r.as_array()?.get(1)?.as_f64()).sum();
+    if total_weight <= 0.0 { return json!({ "ok": false, "error": "band total weight is zero" }); }
+
+    // Accumulate each item's weighted share.
+    let mut chance: HashMap<i64, f64> = HashMap::new();
+    for r in rows {
+        let Some(a) = r.as_array() else { continue };
+        let (Some(g), Some(w)) = (a.first().and_then(|v| v.as_i64()), a.get(1).and_then(|v| v.as_f64())) else { continue };
+        let Some(items) = groups.get(&g.to_string()).and_then(|v| v.as_array()) else { continue };
+        let n = items.len();
+        if n == 0 { continue; }
+        for it in items {
+            if let Some(k) = it.as_i64() {
+                *chance.entry(k).or_insert(0.0) += (w / n as f64) / total_weight;
+            }
+        }
+    }
+
+    let table = crate::save::item_table_snapshot();
+    let mut items: Vec<Value> = chance.into_iter().filter_map(|(k, c)| {
+        let row = table.get(&k.to_string())?;
+        // Only gear (accessories/materials drop too but the finder is for gear upgrades).
+        if row.get("ITEMTYPE").and_then(|v| v.as_str()) != Some("GEAR") { return None; }
+        Some(json!({
+            "itemKey": k, "chance": c,
+            "grade": row.get("GRADE").cloned().unwrap_or(Value::Null),
+            "gearType": row.get("GEARTYPE").cloned().unwrap_or(Value::Null),
+            "level": row.get("Level").cloned().unwrap_or(Value::Null),
+        }))
+    }).collect();
+    items.sort_by(|a, b| b["chance"].as_f64().unwrap_or(0.0).total_cmp(&a["chance"].as_f64().unwrap_or(0.0)));
+    let shown = items.len().min(top_n);
+    items.truncate(top_n);
+
+    json!({
+        "ok": true, "stageLevel": lvl, "band": band,
+        "gearDropCount": shown,
+        "items": items,
+        "source": "wiki drop tables — chances not game-verifiable (RNG tables the game never exposes)",
+    })
+}

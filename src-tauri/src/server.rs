@@ -95,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stat-sources", get(h_stat_sources))
         .route("/api/pets", get(h_pets))
         .route("/api/rune-status", get(h_rune_status))
+        .route("/api/loot", get(h_loot))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -479,6 +480,20 @@ async fn h_stat_sources(State(s): State<AppState>) -> impl IntoResponse {
     match s.meter.read_party_modifiers() {
         Ok(m) => Json(insights::stat_sources(&m)),
         Err(e) => Json(json!({ "ok": false, "needsGame": true, "error": e })),
+    }
+}
+
+/// Loot finder: which gear a stage drops and at what chance. `?level=` overrides the current stage.
+async fn h_loot(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let level = q.get("level").and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| insights::current_stage_level(&s.data_dir));
+    let Some(level) = level else {
+        return Json(json!({ "ok": false, "error": "no stage level (pass ?level= or have a save)" }));
+    };
+    let top_n: usize = q.get("top").and_then(|v| v.parse().ok()).unwrap_or(40).min(200);
+    match read_bundled(&s, "drops.json") {
+        Some(d) => Json(insights::loot_finder(level, &d, top_n)),
+        None => Json(json!({ "ok": false, "error": "data/drops.json missing" })),
     }
 }
 
