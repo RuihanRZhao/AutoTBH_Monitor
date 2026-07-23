@@ -90,6 +90,11 @@ export default defineI18nConfig(() => ({
         fuses: 'fuses', synthRule: '9 same-grade items fuse into 1 of the next grade',
         alchemyUnverified: 'alchemy values from wiki, not game-verified',
       },
+      runes: {
+        owned: 'Owned', maxed: 'Maxed', affordable: 'Affordable now', upgrades: 'Upgrades',
+        rune: 'Rune', cost: 'Cost', effect: 'Effect', combat: 'combat', new: 'new', mats: 'mats',
+        allRunes: 'All runes', noRoi: 'No power-per-gold ranking — rune value units are not game-verified, so cheapest affordable is shown first and combat runes are flagged.',
+      },
       updates: { patchnotes: 'Patch notes', news: 'News' },
       settings: { title: 'Settings', theme: 'Theme', dark: 'Dark', light: 'Light', about: 'About' },
     },
@@ -177,6 +182,11 @@ export default defineI18nConfig(() => ({
         sellGold: '炼金金币', cubeExp: '方块经验', priced: '已定价', cascadeTop: '级联可达',
         fuses: '次合成', synthRule: '9 个同品级物品合成 1 个高一级',
         alchemyUnverified: '炼金价来自 wiki，未经游戏验证',
+      },
+      runes: {
+        owned: '已拥有', maxed: '已满级', affordable: '现在可负担', upgrades: '可升级',
+        rune: '符文', cost: '花费', effect: '效果', combat: '战斗', new: '新', mats: '材料',
+        allRunes: '全部符文', noRoi: '不做「每金币战力」排序 —— 符文数值单位未经游戏验证，故按可负担且最便宜优先，战斗符文已标注。',
       },
       updates: { patchnotes: '更新日志', news: '新闻' },
       settings: { title: '设置', theme: '主题', dark: '深色', light: '浅色', about: '关于' },
