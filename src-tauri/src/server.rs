@@ -92,6 +92,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/idle", get(h_idle))
         .route("/api/goal", get(h_goal))
         .route("/api/crafting-plan", get(h_crafting_plan))
+        .route("/api/stat-sources", get(h_stat_sources))
+        .route("/api/pets", get(h_pets))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -467,6 +469,33 @@ async fn h_crafting_plan(State(s): State<AppState>) -> impl IntoResponse {
         None => json!({ "ok": false, "error": "data/item-alchemy.json missing" }),
     };
     Json(json!({ "ok": true, "synthesis": synthesis, "alchemy": alchemy }))
+}
+
+/// Per-hero stat source breakdown (base / gear / attributes / passives) straight from the live
+/// modifier manager — fully game-authoritative. Shows where each stat's value comes from.
+async fn h_stat_sources(State(s): State<AppState>) -> impl IntoResponse {
+    match s.meter.read_party_modifiers() {
+        Ok(m) => Json(insights::stat_sources(&m)),
+        Err(e) => Json(json!({ "ok": false, "needsGame": true, "error": e })),
+    }
+}
+
+/// Pet advisor: owned/active pets, best owned pet per reward stat, next unlock requirement.
+async fn h_pets(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let pets = match read_bundled(&s, "pets.json") {
+        Some(p) => p,
+        None => return Json(json!({ "ok": false, "error": "data/pets.json missing" })),
+    };
+    let codex = read_bundled(&s, "engine/codex.json").unwrap_or(json!({}));
+    Json(insights::pet_advisor(&psd, &pets, &codex))
 }
 
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {

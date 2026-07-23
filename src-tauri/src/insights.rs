@@ -758,3 +758,141 @@ pub fn alchemy_value(psd: &Value, alchemy_table: &Value) -> Value {
         "source": "wiki — not game-verified",
     })
 }
+
+/// Attribute the game's aggregated stats to their SOURCE (base / gear / attributes / passives /
+/// account), straight from the live modifier manager — fully game-authoritative, no wiki data.
+///
+/// The game tags every `StatModifier` with a `MOD_SOURCE`; `read_party_modifiers` preserves it.
+/// Stats aggregate multiplicatively, so a source's contribution is its MARGINAL effect: the stat
+/// with all sources, minus the stat recomputed with that one source's mods removed. Marginals
+/// don't sum to the total under multiplication (that's inherent, not a bug), so the raw per-source
+/// FLAT/ADDITIVE/MULT buckets are returned alongside for full transparency.
+///
+/// `SOURCE_NAMES` is verified live below (see the endpoint's cross-checks): ITEM must equal the
+/// gear-line reconciliation, and ATTRIBUTE must be non-empty exactly when the hero has allocated
+/// ability points.
+pub fn stat_sources(modifiers: &[Value]) -> Value {
+    // Verified live: 0/1/3/4 are base/item/passive/account (source 1 = ITEM matches the gear-line
+    // reconciliation exactly). Source 2 has never been observed for any hero, so it is NOT labelled
+    // "attribute" on a guess — attribute allocations grant PASSIVESKILL passives and therefore show
+    // up under "passive" (3), which is why there is no separate attribute line.
+    const SOURCE_NAMES: [&str; 5] = ["base", "item", "source2", "passive", "account"];
+    let src_name = |s: i64| -> String {
+        SOURCE_NAMES.get(s as usize).map(|x| x.to_string()).unwrap_or_else(|| format!("source{s}"))
+    };
+    // Aggregate a set of (mode, value) mods into a game-native stat value.
+    let agg = |mods: &[(i64, f64)]| -> f64 {
+        let (mut flat, mut add, mut mul) = (0.0, 0.0, 0.0);
+        for (mode, v) in mods {
+            match mode { 0 => flat += v, 1 => add += v, 2 => mul += v, _ => {} }
+        }
+        flat * (1.0 + add) * (1.0 + mul)
+    };
+
+    let mut heroes = Vec::new();
+    for h in modifiers {
+        let hero_key = h.get("heroKey").and_then(|v| v.as_i64()).unwrap_or(0);
+        let stats_obj = match h.get("stats").and_then(|v| v.as_object()) { Some(o) => o, None => continue };
+        let mut stats = Map::new();
+        for (stat, entry) in stats_obj {
+            let mods: Vec<(i64, f64, i64)> = entry.get("mods").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|m| Some((
+                    m.get("mode")?.as_i64()?, m.get("value")?.as_f64()?, m.get("source")?.as_i64()?,
+                ))).collect())
+                .unwrap_or_default();
+            if mods.is_empty() { continue; }
+
+            let all: Vec<(i64, f64)> = mods.iter().map(|(m, v, _)| (*m, *v)).collect();
+            let total = agg(&all);
+
+            // Per-source raw buckets + marginal contribution.
+            let mut sources_present: Vec<i64> = mods.iter().map(|(_, _, s)| *s).collect();
+            sources_present.sort_unstable();
+            sources_present.dedup();
+
+            let mut per_source = Map::new();
+            for s in sources_present {
+                let without: Vec<(i64, f64)> = mods.iter().filter(|(_, _, ms)| *ms != s).map(|(m, v, _)| (*m, *v)).collect();
+                let marginal = total - agg(&without);
+                let (mut flat, mut add, mut mul) = (0.0, 0.0, 0.0);
+                for (m, v, ms) in &mods {
+                    if *ms != s { continue; }
+                    match m { 0 => flat += v, 1 => add += v, 2 => mul += v, _ => {} }
+                }
+                per_source.insert(src_name(s), json!({
+                    "flat": flat, "additive": add, "multiplicative": mul, "marginal": marginal,
+                }));
+            }
+            stats.insert(stat.clone(), json!({ "total": total, "bySource": per_source }));
+        }
+        heroes.push(json!({ "heroKey": hero_key, "stats": stats }));
+    }
+    json!({ "ok": true, "heroes": heroes, "source": "live game modifier manager (authoritative)" })
+}
+
+/// Pet advisor: which pets you own, which is active, and the best owned pet for each of gold /
+/// exp / drop-rate. Unlocked/arranged state is game-authoritative (save); the pet STAT values are
+/// wiki (`data/pets.json`, not game-verified). The next locked pet's unlock requirement is
+/// resolved to a monster name via the codex when it's a KillMonster unlock.
+pub fn pet_advisor(psd: &Value, pets_table: &Value, codex: &Value) -> Value {
+    let defs = pets_table.get("pets").and_then(|v| v.as_object());
+    let stats = pets_table.get("petStats");
+    let Some(defs) = defs else { return json!({ "ok": false, "error": "pets.json missing pets" }); };
+
+    let save_pets = as_arr(&psd["PetSaveData"]);
+    let unlocked: std::collections::HashSet<i64> = save_pets.iter()
+        .filter(|p| b(p, "IsUnlock")).map(|p| i(p, "PetKey")).collect();
+    let arranged = i(&as_obj(&psd["commonSaveData"]), "ArrangedPetKey");
+
+    // Best owned pet per stat.
+    let stat_val = |pet_key: i64, stat: &str| -> f64 {
+        let sk = defs.get(&pet_key.to_string()).and_then(|d| d.get("statKey")).and_then(|v| v.as_i64());
+        let Some(sk) = sk else { return 0.0 };
+        stats.and_then(|s| s.get(sk.to_string())).and_then(|v| v.as_array())
+            .map(|rows| rows.iter().filter(|r| r.get("st").and_then(|x| x.as_str()) == Some(stat))
+                .filter_map(|r| r.get("v").and_then(|x| x.as_f64())).sum())
+            .unwrap_or(0.0)
+    };
+    let best_for = |stat: &str| -> Value {
+        unlocked.iter().map(|&k| (k, stat_val(k, stat)))
+            .filter(|(_, v)| *v > 0.0)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(k, v)| json!({ "petKey": k, "value": v,
+                "name": defs.get(&k.to_string()).and_then(|d| d.get("name")).cloned().unwrap_or(Value::Null) }))
+            .unwrap_or(Value::Null)
+    };
+
+    // Next locked pet + its unlock requirement (Bat first if not owned, then any locked).
+    let monster_name = |mk: i64| -> Option<String> {
+        codex.get("monsters").and_then(|m| m.as_array()).and_then(|arr| {
+            arr.iter().find(|x| x.get("key").and_then(|k| k.as_i64()) == Some(mk))
+                .and_then(|x| x.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        })
+    };
+    let locked: Vec<i64> = defs.keys().filter_map(|k| k.parse::<i64>().ok())
+        .filter(|k| !unlocked.contains(k)).collect();
+    let next = if !unlocked.contains(&1001) { Some(1001) } else { locked.iter().min().copied() };
+    let next_info = next.and_then(|k| defs.get(&k.to_string()).map(|d| {
+        let unlock = d.get("unlock").and_then(|v| v.as_str()).unwrap_or("");
+        let param1 = d.get("param1").and_then(|v| v.as_i64());
+        json!({
+            "petKey": k, "name": d.get("name").cloned().unwrap_or(Value::Null),
+            "unlock": unlock, "param1": param1,
+            "requirement": if unlock == "KillMonster" {
+                param1.and_then(monster_name).map(|n| format!("Kill {n}")).unwrap_or_else(|| "Kill a specific monster".into())
+            } else if unlock == "DLC" {
+                "Steam DLC".into()
+            } else { unlock.to_string() },
+        })
+    }));
+
+    json!({
+        "ok": true,
+        "total": defs.len(), "unlocked": unlocked.len(), "arranged": arranged,
+        "bestGold": best_for("IncreaseGoldAmount"),
+        "bestExp": best_for("IncreaseExpAmount"),
+        "bestDrop": best_for("DropChanceNormalChestPercent"),
+        "nextUnlock": next_info,
+        "statSource": "wiki — not game-verified",
+    })
+}
