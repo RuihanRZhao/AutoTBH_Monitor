@@ -89,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/farm-calibration", get(h_farm_calibration))
         .route("/api/farm-rank", get(h_farm_rank))
         .route("/api/xp-forecast", get(h_xp_forecast))
+        .route("/api/idle", get(h_idle))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -105,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/debug/monsterhp", get(h_debug_monsterhp))
         .route("/api/debug/classscan", get(h_debug_classscan))
         .route("/api/debug/instancedump", get(h_debug_instancedump))
+        .route("/api/debug/rawrunes", get(h_debug_rawrunes))
         .route("/api/debug/stagelogs", get(h_debug_stagelogs))
         .route("/api/debug/logdump", get(h_debug_logdump))
         .route("/api/items", get(h_items))
@@ -353,6 +355,56 @@ async fn h_xp_forecast(State(s): State<AppState>) -> impl IntoResponse {
         .unwrap_or(0.0);
 
     Json(insights::xp_forecast(&psd, &levels, eps))
+}
+
+/// Offline/idle reward accrual + a couple of headline ETAs. Elapsed time comes from the save
+/// FILE's mtime (timezone-safe), not the in-game lastSavedTime field.
+async fn h_idle(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let rewards = match read_bundled(&s, "offline-rewards.json").and_then(|v| v.get("rewards").cloned()) {
+        Some(v) => v,
+        None => return Json(json!({ "ok": false, "error": "data/offline-rewards.json missing" })),
+    };
+    let rune_docs = match read_bundled(&s, "offline-reward-runes.json") {
+        Some(v) => v,
+        None => return Json(json!({ "ok": false, "error": "data/offline-reward-runes.json missing" })),
+    };
+
+    let stage_level = insights::current_stage_level(&s.data_dir);
+    let elapsed_sec = {
+        let mtime = save::save_mtime(); // ms since epoch, from the save file
+        if mtime > 0.0 { Some(((now_ms() as f64) - mtime).max(0.0) / 1000.0) } else { None }
+    };
+    let idle = insights::idle_info(&psd, elapsed_sec, stage_level, &rewards, &rune_docs);
+
+    // Active gold/sec: prefer the current stage's measured rate, else the best measured stage.
+    let measured_stages = ranked_farm(&s, None)
+        .and_then(|v| v.get("measured").and_then(|m| m.as_array().cloned()))
+        .unwrap_or_default();
+    let cur_key = insights::current_stage_key();
+    let gold_per_sec = measured_stages
+        .iter()
+        .find(|m| m.get("stageKey").and_then(|v| v.as_i64()) == cur_key)
+        .or_else(|| {
+            measured_stages.iter().max_by(|a, b| {
+                a.get("goldPerSec").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    .partial_cmp(&b.get("goldPerSec").and_then(|v| v.as_f64()).unwrap_or(0.0))
+                    .unwrap()
+            })
+        })
+        .and_then(|m| m.get("goldPerSec")).and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let gold_now = insights::current_gold(&psd);
+    let fc = insights::forecast(gold_now, gold_per_sec, &idle);
+    Json(json!({ "ok": true, "idle": idle, "forecast": fc, "elapsedSec": elapsed_sec, "goldNow": gold_now }))
 }
 
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
@@ -610,6 +662,13 @@ async fn h_gear_lines(State(s): State<AppState>) -> impl IntoResponse {
         Ok(v) => Json(v),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }
+}
+
+/// One-off: dump the raw RuneSaveData shape from the save (field-name discovery for idleInfo).
+async fn h_debug_rawrunes() -> impl IntoResponse {
+    let raw = match save::player_save_data_string() { Ok(r) => r, Err(e) => return Json(json!({"ok":false,"error":e.to_string()})) };
+    let psd: Value = match serde_json::from_str(&raw) { Ok(v) => v, Err(e) => return Json(json!({"ok":false,"error":e.to_string()})) };
+    Json(json!({ "ok": true, "sample": psd["RuneSaveData"].as_array().map(|a| a.iter().take(3).cloned().collect::<Vec<_>>()) }))
 }
 
 /// Probe the game's own ItemInfoData object for an ItemKey (game-authoritative layout discovery).

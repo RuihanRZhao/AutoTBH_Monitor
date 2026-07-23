@@ -203,16 +203,13 @@ pub fn rank_stages(stages: &[Value], measured: &[Value], calib: &RankCalib) -> V
         if let Some(m) = by_key.get(&key) {
             let clear_sec = m.get("clearSec").and_then(|v| v.as_f64()).unwrap_or(0.0);
             if clear_sec <= 0.0 { continue; }
-            // Cross-check the table's reward constants against what was actually measured —
-            // the same "surface disagreements instead of trusting one source" pattern used for
-            // gear lines. A real mismatch here would mean expectedGold/expectedEXP themselves
-            // need recalibrating, same class of bug as stageHpScale.
+            // Measured gold/exp per second is authoritative — it already reflects the player's
+            // gold-find / exp bonuses, which the table's base `expectedGold`/`expectedEXP` do NOT.
+            // (An earlier version flagged measured-vs-table disagreement as a possible data error,
+            // but for any player with reward-boosting runes the two ALWAYS differ by exactly those
+            // bonuses, so the flag fired on every stage and pointed at nothing actionable.)
             let measured_gold_per_sec = m.get("goldPerSec").and_then(|v| v.as_f64());
             let table_gold_per_sec = if expected_gold > 0.0 { Some(expected_gold / clear_sec) } else { None };
-            let gold_disagrees = match (measured_gold_per_sec, table_gold_per_sec) {
-                (Some(a), Some(b)) if b > 0.0 => ((a - b).abs() / b) > 0.25,
-                _ => false,
-            };
             // Our own meter never fills RunRecord.xp (no game-authoritative source hooked up
             // yet), so `m.get("expPerSec")` is present but JSON `null` — NOT absent. `.unwrap_or`
             // only falls back on a missing KEY, not a null VALUE, so a naive
@@ -229,7 +226,9 @@ pub fn rank_stages(stages: &[Value], measured: &[Value], calib: &RankCalib) -> V
                 "goldPerSec": gold_per_sec, "expPerSec": exp_per_sec,
                 "goldPerHour": gold_per_sec.map(|g| g * 3600.0),
                 "expPerHour": exp_per_sec.map(|e| e * 3600.0),
-                "tableGoldDisagreesWithMeasured": gold_disagrees,
+                // exp/sec falls back to the base table when our meter has no measured XP — flag
+                // that so the UI can mark it as an estimate rather than a real recorded rate.
+                "expFromTable": measured_exp_per_sec.is_none() && table_exp_per_sec.is_some(),
             }));
         } else {
             let waves = s.get("waves").and_then(|v| v.as_f64()).unwrap_or(0.0);

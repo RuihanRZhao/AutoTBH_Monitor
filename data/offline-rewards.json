@@ -1,0 +1,708 @@
+{
+ "_comment": [
+  "Offline/idle reward table, keyed by stage LEVEL (not stageKey). gold/exp are per-kill; kills",
+  "is how many kills the idle timer awards over the full cap (OFFLINE_CAP_SECONDS, 8h); clears",
+  "is unused here. Source: TBH wiki (ported from the reference app gamedata.js). NOT verified",
+  "against the game -- unlike stageHpScale, there is no live memory read backing this table yet.",
+  "A future calibration could compare a real accrued-offline-gold reading (after reopening the",
+  "game) against this table's prediction, the same way farm-calibration.json was built."
+ ],
+ "rewards": {
+  "1": {
+   "gold": 1,
+   "exp": 1,
+   "kills": 180,
+   "clears": 20
+  },
+  "2": {
+   "gold": 2,
+   "exp": 2,
+   "kills": 300,
+   "clears": 15
+  },
+  "3": {
+   "gold": 3,
+   "exp": 2,
+   "kills": 423,
+   "clears": 15
+  },
+  "4": {
+   "gold": 4,
+   "exp": 4,
+   "kills": 423,
+   "clears": 15
+  },
+  "5": {
+   "gold": 5,
+   "exp": 6,
+   "kills": 423,
+   "clears": 12
+  },
+  "6": {
+   "gold": 6,
+   "exp": 11,
+   "kills": 528,
+   "clears": 12
+  },
+  "7": {
+   "gold": 6,
+   "exp": 15,
+   "kills": 660,
+   "clears": 12
+  },
+  "8": {
+   "gold": 6,
+   "exp": 15,
+   "kills": 792,
+   "clears": 12
+  },
+  "9": {
+   "gold": 6,
+   "exp": 21,
+   "kills": 828,
+   "clears": 12
+  },
+  "10": {
+   "gold": 7,
+   "exp": 29,
+   "kills": 864,
+   "clears": 12
+  },
+  "11": {
+   "gold": 10,
+   "exp": 49,
+   "kills": 939,
+   "clears": 12
+  },
+  "12": {
+   "gold": 10,
+   "exp": 53,
+   "kills": 939,
+   "clears": 12
+  },
+  "13": {
+   "gold": 10,
+   "exp": 58,
+   "kills": 939,
+   "clears": 10
+  },
+  "14": {
+   "gold": 12,
+   "exp": 91,
+   "kills": 939,
+   "clears": 10
+  },
+  "15": {
+   "gold": 13,
+   "exp": 103,
+   "kills": 939,
+   "clears": 10
+  },
+  "16": {
+   "gold": 13,
+   "exp": 125,
+   "kills": 980,
+   "clears": 10
+  },
+  "17": {
+   "gold": 13,
+   "exp": 126,
+   "kills": 980,
+   "clears": 10
+  },
+  "18": {
+   "gold": 20,
+   "exp": 222,
+   "kills": 1120,
+   "clears": 10
+  },
+  "19": {
+   "gold": 21,
+   "exp": 259,
+   "kills": 1120,
+   "clears": 10
+  },
+  "20": {
+   "gold": 21,
+   "exp": 267,
+   "kills": 1200,
+   "clears": 10
+  },
+  "21": {
+   "gold": 28,
+   "exp": 359,
+   "kills": 1200,
+   "clears": 10
+  },
+  "22": {
+   "gold": 28,
+   "exp": 359,
+   "kills": 1200,
+   "clears": 10
+  },
+  "23": {
+   "gold": 28,
+   "exp": 359,
+   "kills": 1200,
+   "clears": 10
+  },
+  "24": {
+   "gold": 28,
+   "exp": 359,
+   "kills": 1200,
+   "clears": 10
+  },
+  "25": {
+   "gold": 28,
+   "exp": 359,
+   "kills": 1440,
+   "clears": 10
+  },
+  "26": {
+   "gold": 29,
+   "exp": 359,
+   "kills": 1440,
+   "clears": 10
+  },
+  "27": {
+   "gold": 30,
+   "exp": 404,
+   "kills": 1440,
+   "clears": 10
+  },
+  "28": {
+   "gold": 56,
+   "exp": 936,
+   "kills": 1440,
+   "clears": 10
+  },
+  "29": {
+   "gold": 56,
+   "exp": 936,
+   "kills": 1600,
+   "clears": 10
+  },
+  "30": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 1700,
+   "clears": 10
+  },
+  "31": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 1870,
+   "clears": 10
+  },
+  "32": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 1885,
+   "clears": 10
+  },
+  "33": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 1900,
+   "clears": 10
+  },
+  "34": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 1900,
+   "clears": 10
+  },
+  "35": {
+   "gold": 68,
+   "exp": 1163,
+   "kills": 2145,
+   "clears": 10
+  },
+  "36": {
+   "gold": 76,
+   "exp": 1336,
+   "kills": 2400,
+   "clears": 10
+  },
+  "37": {
+   "gold": 76,
+   "exp": 1336,
+   "kills": 2400,
+   "clears": 10
+  },
+  "38": {
+   "gold": 76,
+   "exp": 1336,
+   "kills": 2600,
+   "clears": 10
+  },
+  "39": {
+   "gold": 76,
+   "exp": 1336,
+   "kills": 2600,
+   "clears": 10
+  },
+  "40": {
+   "gold": 98,
+   "exp": 1777,
+   "kills": 2730,
+   "clears": 10
+  },
+  "41": {
+   "gold": 98,
+   "exp": 1777,
+   "kills": 2730,
+   "clears": 10
+  },
+  "42": {
+   "gold": 98,
+   "exp": 1777,
+   "kills": 2730,
+   "clears": 10
+  },
+  "43": {
+   "gold": 103,
+   "exp": 1901,
+   "kills": 2730,
+   "clears": 10
+  },
+  "44": {
+   "gold": 121,
+   "exp": 2118,
+   "kills": 2940,
+   "clears": 10
+  },
+  "45": {
+   "gold": 125,
+   "exp": 2118,
+   "kills": 3080,
+   "clears": 10
+  },
+  "46": {
+   "gold": 125,
+   "exp": 2118,
+   "kills": 3080,
+   "clears": 10
+  },
+  "47": {
+   "gold": 125,
+   "exp": 2118,
+   "kills": 3080,
+   "clears": 10
+  },
+  "48": {
+   "gold": 125,
+   "exp": 2118,
+   "kills": 3080,
+   "clears": 10
+  },
+  "49": {
+   "gold": 125,
+   "exp": 2118,
+   "kills": 3080,
+   "clears": 10
+  },
+  "50": {
+   "gold": 148,
+   "exp": 2640,
+   "kills": 3080,
+   "clears": 10
+  },
+  "51": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3300,
+   "clears": 10
+  },
+  "52": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3300,
+   "clears": 10
+  },
+  "53": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3450,
+   "clears": 10
+  },
+  "54": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3450,
+   "clears": 10
+  },
+  "55": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3600,
+   "clears": 10
+  },
+  "56": {
+   "gold": 198,
+   "exp": 3731,
+   "kills": 3600,
+   "clears": 10
+  },
+  "57": {
+   "gold": 212,
+   "exp": 4021,
+   "kills": 3600,
+   "clears": 10
+  },
+  "58": {
+   "gold": 212,
+   "exp": 4021,
+   "kills": 3600,
+   "clears": 10
+  },
+  "59": {
+   "gold": 212,
+   "exp": 4021,
+   "kills": 3840,
+   "clears": 10
+  },
+  "60": {
+   "gold": 223,
+   "exp": 4241,
+   "kills": 3840,
+   "clears": 10
+  },
+  "61": {
+   "gold": 223,
+   "exp": 4241,
+   "kills": 4000,
+   "clears": 10
+  },
+  "62": {
+   "gold": 243,
+   "exp": 4652,
+   "kills": 4000,
+   "clears": 10
+  },
+  "63": {
+   "gold": 243,
+   "exp": 4652,
+   "kills": 4000,
+   "clears": 10
+  },
+  "64": {
+   "gold": 243,
+   "exp": 4698,
+   "kills": 4000,
+   "clears": 10
+  },
+  "65": {
+   "gold": 243,
+   "exp": 4698,
+   "kills": 4000,
+   "clears": 10
+  },
+  "66": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4000,
+   "clears": 10
+  },
+  "67": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4250,
+   "clears": 10
+  },
+  "68": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4250,
+   "clears": 10
+  },
+  "69": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4250,
+   "clears": 10
+  },
+  "70": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4420,
+   "clears": 10
+  },
+  "71": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4420,
+   "clears": 10
+  },
+  "72": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4420,
+   "clears": 10
+  },
+  "73": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4420,
+   "clears": 10
+  },
+  "74": {
+   "gold": 314,
+   "exp": 5633,
+   "kills": 4420,
+   "clears": 10
+  },
+  "75": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 4420,
+   "clears": 10
+  },
+  "76": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 4680,
+   "clears": 10
+  },
+  "77": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 4680,
+   "clears": 10
+  },
+  "78": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "79": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "80": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "81": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "82": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "83": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5040,
+   "clears": 10
+  },
+  "84": {
+   "gold": 466,
+   "exp": 9054,
+   "kills": 5320,
+   "clears": 10
+  },
+  "85": {
+   "gold": 497,
+   "exp": 9665,
+   "kills": 5320,
+   "clears": 10
+  },
+  "86": {
+   "gold": 497,
+   "exp": 9665,
+   "kills": 5510,
+   "clears": 10
+  },
+  "87": {
+   "gold": 497,
+   "exp": 9710,
+   "kills": 5510,
+   "clears": 10
+  },
+  "88": {
+   "gold": 497,
+   "exp": 9710,
+   "kills": 5510,
+   "clears": 10
+  },
+  "89": {
+   "gold": 603,
+   "exp": 11272,
+   "kills": 5800,
+   "clears": 10
+  },
+  "90": {
+   "gold": 606,
+   "exp": 11272,
+   "kills": 5800,
+   "clears": 10
+  },
+  "91": {
+   "gold": 606,
+   "exp": 11272,
+   "kills": 6000,
+   "clears": 10
+  },
+  "92": {
+   "gold": 606,
+   "exp": 11272,
+   "kills": 6000,
+   "clears": 10
+  },
+  "93": {
+   "gold": 690,
+   "exp": 12809,
+   "kills": 6000,
+   "clears": 10
+  },
+  "94": {
+   "gold": 1022,
+   "exp": 20395,
+   "kills": 6300,
+   "clears": 10
+  },
+  "95": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "96": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "97": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "98": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "99": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "100": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "101": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "102": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "103": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "104": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "105": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "106": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "107": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "108": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "109": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "110": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "111": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "112": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "113": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "114": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "115": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  },
+  "116": {
+   "gold": 1110,
+   "exp": 21898,
+   "kills": 6300,
+   "clears": 10
+  }
+ }
+}

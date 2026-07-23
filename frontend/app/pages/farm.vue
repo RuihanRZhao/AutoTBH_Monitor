@@ -3,6 +3,7 @@ const { t } = useI18n()
 const { get } = useApi()
 
 const rank = ref<any>(null)
+const idle = ref<any>(null)
 const loading = ref(true)
 const err = ref<string | null>(null)
 
@@ -10,7 +11,11 @@ async function load() {
   loading.value = true
   err.value = null
   try {
-    rank.value = await get('/api/farm-rank')
+    // Idle is a secondary panel — don't let its failure blank the whole page.
+    const [r, i] = await Promise.allSettled([get('/api/farm-rank'), get('/api/idle')])
+    if (r.status === 'fulfilled') rank.value = r.value
+    else { err.value = String(r.reason?.message || r.reason); rank.value = null }
+    idle.value = i.status === 'fulfilled' ? i.value : null
   } catch (e: any) {
     err.value = String(e?.message || e)
     rank.value = null
@@ -60,6 +65,28 @@ function fmtSec(s: any) {
         {{ t('farm.msNote', { ms: rank.currentPartyMovementSpeed.toFixed(2), dev: rank.movementSpeedDeviationPct.toFixed(1) }) }}
       </p>
 
+      <!-- Idle / offline accrual -->
+      <div v-if="idle?.idle?.unlocked" class="idle-box">
+        <div class="idle-head">
+          <strong>{{ t('farm.idleTitle') }}</strong>
+          <span class="muted" style="font-size:11px">{{ t('farm.idleUnverified') }}</span>
+        </div>
+        <div class="idle-grid">
+          <div><span class="k">{{ t('farm.accrued') }}</span>
+            <span class="v">{{ num(idle.idle.accruedGold) }} <span class="muted">/ {{ num(idle.idle.fullGold) }}</span> ⦿</span></div>
+          <div><span class="k">EXP</span>
+            <span class="v">{{ num(idle.idle.accruedExp) }} <span class="muted">/ {{ num(idle.idle.fullExp) }}</span></span></div>
+          <div><span class="k">{{ t('farm.toCap') }}</span>
+            <span class="v">{{ fmtSec(idle.idle.secsToCap) }}</span></div>
+          <div v-if="idle.forecast?.gold100kSec != null"><span class="k">{{ t('farm.gold100k') }}</span>
+            <span class="v">{{ fmtSec(idle.forecast.gold100kSec) }}</span></div>
+        </div>
+        <div class="idle-bar"><div class="idle-fill" :style="{ width: Math.round((idle.idle.frac || 0) * 100) + '%' }"></div></div>
+      </div>
+      <p v-else-if="idle && idle.idle && !idle.idle.unlocked" class="muted" style="font-size:12px; margin:0 0 14px">
+        {{ t('farm.idleLocked') }}
+      </p>
+
       <h3>{{ t('farm.measured') }}</h3>
       <p class="muted" style="font-size:12px; margin:-4px 0 10px">{{ t('farm.measuredNote') }}</p>
       <table v-if="rank.measured.length">
@@ -74,11 +101,11 @@ function fmtSec(s: any) {
             <td>{{ r.label }} <span class="muted">#{{ r.stageKey }}</span></td>
             <td>{{ r.n }}</td>
             <td>{{ fmtSec(r.clearSec) }}</td>
+            <td>{{ num(r.goldPerHour) }}</td>
             <td>
-              {{ num(r.goldPerHour) }}
-              <span v-if="r.tableGoldDisagreesWithMeasured" class="tag warn-tag" title="Measured gold/hr disagrees with the table's expectedGold by more than 25%">⚠</span>
+              {{ num(r.expPerHour) }}
+              <span v-if="r.expFromTable" class="tag" title="Estimated from the base reward table — the meter has no measured XP for this stage yet">est</span>
             </td>
-            <td>{{ num(r.expPerHour) }}</td>
           </tr>
         </tbody>
       </table>
@@ -121,4 +148,13 @@ h3 { margin: 0 0 4px; }
 }
 .stay-box.switch { border-color: var(--warn); }
 .stay-box.unmeasured { border-color: var(--muted, #888); color: var(--muted, #888); }
+.idle-box {
+  border: 1px solid var(--border, #333); border-radius: 6px; padding: 10px 12px; margin: 0 0 16px;
+}
+.idle-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.idle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 16px; }
+.idle-grid .k { display: block; font-size: 11px; color: var(--muted, #888); }
+.idle-grid .v { font-size: 15px; font-weight: 600; }
+.idle-bar { height: 4px; background: var(--border, #333); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.idle-fill { height: 100%; background: var(--good); }
 </style>

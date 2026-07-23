@@ -61,6 +61,16 @@ pub fn current_stage_key() -> Option<i64> {
     common.get("currentStageKey").and_then(|v| v.as_i64())
 }
 
+/// Player's current gold from the parsed save (currency key 100001).
+pub fn current_gold(psd: &Value) -> i64 {
+    for c in as_arr(&psd["currenySaveDatas"]) { // NB: the game misspells "curreny"
+        if i(&c, "Key") == GOLD_KEY {
+            return i(&c, "Quantity");
+        }
+    }
+    0
+}
+
 /// Look up a stage's level in the bundled stage table.
 pub fn stage_level_for(data_dir: &std::path::Path, stage_key: i64) -> Option<f64> {
     let txt = std::fs::read_to_string(data_dir.join("engine/codex.json")).ok()?;
@@ -376,5 +386,99 @@ pub fn xp_forecast(psd: &Value, levels_table: &[f64], eps: f64) -> Value {
     json!({
         "ok": true, "heroes": heroes, "expPerSecUsed": eps,
         "levelsTableSource": "TBH wiki — not yet verified against the game",
+    })
+}
+
+/// Offline/idle reward projection: how much gold/exp has accrued while away, and how long until
+/// the cap. `rewards_table` and `rune_docs` are `data/offline-rewards.json` /
+/// `data/offline-reward-runes.json` (both TBH wiki, not yet verified against the game — see their
+/// `_comment`s). `elapsed_sec` should come from the save FILE's mtime, not the in-game
+/// `lastSavedTime` field: that field is local-time .NET ticks but naive parsing reads it as UTC,
+/// which skews accrual by the machine's UTC offset. mtime and "now" share one clock, so it can't.
+pub fn idle_info(psd: &Value, elapsed_sec: Option<f64>, stage_level: Option<f64>, rewards_table: &Value, rune_docs: &Value) -> Value {
+    const OFFLINE_CAP_SECONDS: f64 = 28800.0; // 8h, matches the reference app's PARAMS
+    let runes = as_arr(&psd["RuneSaveData"]);
+    let owned_level = |key: i64| -> i64 {
+        runes.iter().find(|r| i(r, "RuneKey") == key).map(|r| i(r, "Level")).unwrap_or(0)
+    };
+    let unlock_key = rune_docs.get("unlockRuneKey").and_then(|v| v.as_i64()).unwrap_or(11001);
+    let unlocked = owned_level(unlock_key) > 0;
+    let sl = stage_level.unwrap_or(0.0).floor().max(0.0) as i64;
+    let cap = OFFLINE_CAP_SECONDS;
+
+    if !unlocked {
+        return json!({ "unlocked": false, "stageLevel": sl, "cap": cap, "fullGold": 0, "fullExp": 0 });
+    }
+    let Some(row) = rewards_table.get(sl.to_string()) else {
+        return json!({
+            "unlocked": true, "stageLevel": sl, "cap": cap, "fullGold": 0, "fullExp": 0,
+            "note": "no offline-reward row for this stage level in the wiki table",
+        });
+    };
+    let row_gold = row.get("gold").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let row_exp = row.get("exp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let row_kills = row.get("kills").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+    // Sum the OfflineReward*Percent stat rows across every OWNED level (1..=lv) of each rune —
+    // these stack per-level, they are not a single "value at current level" lookup.
+    let bonus_sum = |keys: &[i64], stat: &str| -> f64 {
+        let mut v = 0.0;
+        for k in keys {
+            let lv = owned_level(*k);
+            if lv <= 0 { continue; }
+            let Some(levels) = rune_docs.get("runes").and_then(|m| m.get(k.to_string())).and_then(|rd| rd.get("levels")) else { continue };
+            for l in 1..=lv {
+                if let Some(row) = levels.get(l.to_string()) {
+                    if row.get("st").and_then(|v| v.as_str()) == Some(stat) {
+                        v += row.get("v").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    }
+                }
+            }
+        }
+        v
+    };
+    let keys_of = |field: &str| -> Vec<i64> {
+        rune_docs.get(field).and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+            .unwrap_or_default()
+    };
+    let gold_bonus = bonus_sum(&keys_of("goldRuneKeys"), "OfflineRewardGoldPercent") / 100.0;
+    let exp_bonus = bonus_sum(&keys_of("expRuneKeys"), "OfflineRewardExpPercent") / 100.0;
+
+    let full_gold = (row_gold * row_kills * (1.0 + gold_bonus)).round();
+    let full_exp = (row_exp * row_kills * (1.0 + exp_bonus)).round();
+    let frac = elapsed_sec.map(|e| (e.max(0.0) / cap).min(1.0));
+
+    json!({
+        "unlocked": true, "stageLevel": sl, "cap": cap, "capHours": cap / 3600.0,
+        "goldBonus": gold_bonus, "expBonus": exp_bonus,
+        "fullGold": full_gold, "fullExp": full_exp,
+        "goldPerSec": full_gold / cap, "expPerSec": full_exp / cap,
+        "accruedGold": frac.map(|f| (full_gold * f).round()),
+        "accruedExp": frac.map(|f| (full_exp * f).round()),
+        "frac": frac,
+        "secsToCap": elapsed_sec.map(|e| (cap - e.max(0.0).min(cap)).max(0.0)),
+        "rewardsTableSource": "TBH wiki — not yet verified against the game",
+    })
+}
+
+/// Thin summary combining idle accrual and current farm income into a couple of headline ETAs.
+/// Deliberately does not repeat `xpForecast`'s per-hero milestones — this is just gold100k + the
+/// idle cap, the two numbers small enough to want at a glance without opening either sub-view.
+pub fn forecast(gold_now: i64, gold_per_sec: f64, idle: &Value) -> Value {
+    let idle_cap_sec = if idle.get("unlocked").and_then(|v| v.as_bool()) == Some(true) {
+        idle.get("cap").cloned().unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let gold100k_sec = if gold_per_sec > 0.0 {
+        Some(((100_000.0 - gold_now as f64).max(0.0)) / gold_per_sec)
+    } else {
+        None
+    };
+    json!({
+        "idleCapSec": idle_cap_sec,
+        "goldPerSec": if gold_per_sec > 0.0 { Some(gold_per_sec) } else { None },
+        "gold100kSec": gold100k_sec,
     })
 }

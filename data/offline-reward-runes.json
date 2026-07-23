@@ -1,0 +1,452 @@
+{
+ "_comment": [
+  "Level tables for the 8 offline-reward runes (OfflineRewardGoldPercent /",
+  "OfflineRewardExpPercent stat rows) plus the Rune of Repose (11001) that unlocks offline",
+  "rewards at all. Source: TBH wiki. Narrow, targeted extraction for idleInfo only -- NOT a",
+  "general rune-tree data port (that is separate future scope, M4).",
+  "",
+  "UNITS: each level row v is in PERCENT (v=100 => +100% offline reward), summed across all owned",
+  "levels then divided by 100 in insights::idle_info -- matches the reference app exactly. Do NOT",
+  "confuse this with the per-mille (/1000) convention used by combat stat modifiers; this table",
+  "is genuinely percent. Verified against the reference: player with 6 combined gold-rune levels",
+  "yields goldBonus 6.0 (=600%), consistent with the in-game +100%/level design."
+ ],
+ "goldRuneKeys": [
+  110011,
+  15002,
+  180201,
+  180401
+ ],
+ "expRuneKeys": [
+  110012,
+  150021,
+  180301,
+  180501
+ ],
+ "unlockRuneKey": 11001,
+ "runes": {
+  "11001": {
+   "max": 1,
+   "ldk": 11001,
+   "name": {
+    "en-US": "Rune of Repose",
+    "pt-BR": "Runa do Repouso",
+    "es-ES": "Runa del Reposo",
+    "fr-FR": "Rune du Repos",
+    "de-DE": "Ruhe-Rune",
+    "ja-JP": "安息のルーン",
+    "ko-KR": "안식의 룬",
+    "zh-Hans": "安息符文",
+    "zh-Hant": "安息符文",
+    "ru-RU": "Руна покоя",
+    "pl-PL": "Runa Spoczynku",
+    "tr-TR": "Huzur Runu",
+    "uk-UA": "Руна спокою",
+    "id-ID": "Rune Peristirahatan",
+    "th-TH": "รูนพักผ่อน",
+    "vi-VN": "Rune An Nghỉ"
+   },
+   "prevReq": 1,
+   "levels": {
+    "1": {
+     "cost": 100,
+     "costItem": 100001,
+     "st": "UnlockOfflineReward",
+     "v": 1
+    }
+   }
+  },
+  "15002": {
+   "max": 3,
+   "ldk": 15002,
+   "name": {
+    "en-US": "Rune of Hoarding",
+    "pt-BR": "Runa do Acúmulo",
+    "es-ES": "Runa del Acopio",
+    "fr-FR": "Rune d'Accumulation",
+    "de-DE": "Hortrune",
+    "ja-JP": "蓄積のルーン",
+    "ko-KR": "비축의 룬",
+    "zh-Hans": "储藏符文",
+    "zh-Hant": "儲藏符文",
+    "ru-RU": "Руна накопления",
+    "pl-PL": "Runa Gromadzenia",
+    "tr-TR": "Biriktirme Runu",
+    "uk-UA": "Руна накопичення",
+    "id-ID": "Rune Penimbunan",
+    "th-TH": "รูนกักตุน",
+    "vi-VN": "Rune Tích Trữ"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 50000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 75000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 100000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    }
+   }
+  },
+  "110011": {
+   "max": 3,
+   "ldk": 110011,
+   "name": {
+    "en-US": "Rune of Hoarding",
+    "pt-BR": "Runa do Acúmulo",
+    "es-ES": "Runa del Acopio",
+    "fr-FR": "Rune d'Accumulation",
+    "de-DE": "Hortrune",
+    "ja-JP": "蓄積のルーン",
+    "ko-KR": "비축의 룬",
+    "zh-Hans": "储藏符文",
+    "zh-Hant": "儲藏符文",
+    "ru-RU": "Руна накопления",
+    "pl-PL": "Runa Gromadzenia",
+    "tr-TR": "Biriktirme Runu",
+    "uk-UA": "Руна накопичення",
+    "id-ID": "Rune Penimbunan",
+    "th-TH": "รูนกักตุน",
+    "vi-VN": "Rune Tích Trữ"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 500,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 1000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 1500,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    }
+   }
+  },
+  "110012": {
+   "max": 3,
+   "ldk": 110012,
+   "name": {
+    "en-US": "Rune of Training",
+    "pt-BR": "Runa de Treinamento",
+    "es-ES": "Runa de Entrenamiento",
+    "fr-FR": "Rune d'Entraînement",
+    "de-DE": "Trainingsrune",
+    "ja-JP": "修練のルーン",
+    "ko-KR": "수련의 룬",
+    "zh-Hans": "训练符文",
+    "zh-Hant": "訓練符文",
+    "ru-RU": "Руна тренировки",
+    "pl-PL": "Runa Treningu",
+    "tr-TR": "Eğitim Runu",
+    "uk-UA": "Руна тренування",
+    "id-ID": "Rune Latihan",
+    "th-TH": "รูนฝึกฝน",
+    "vi-VN": "Rune Tu Luyện"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 500,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 1000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 1500,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    }
+   }
+  },
+  "150021": {
+   "max": 3,
+   "ldk": 150021,
+   "name": {
+    "en-US": "Rune of Training",
+    "pt-BR": "Runa de Treinamento",
+    "es-ES": "Runa de Entrenamiento",
+    "fr-FR": "Rune d'Entraînement",
+    "de-DE": "Trainingsrune",
+    "ja-JP": "修練のルーン",
+    "ko-KR": "수련의 룬",
+    "zh-Hans": "训练符文",
+    "zh-Hant": "訓練符文",
+    "ru-RU": "Руна тренировки",
+    "pl-PL": "Runa Treningu",
+    "tr-TR": "Eğitim Runu",
+    "uk-UA": "Руна тренування",
+    "id-ID": "Rune Latihan",
+    "th-TH": "รูนฝึกฝน",
+    "vi-VN": "Rune Tu Luyện"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 75000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 100000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 125000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    }
+   }
+  },
+  "180201": {
+   "max": 5,
+   "ldk": 180201,
+   "name": {
+    "en-US": "Rune of Hoarding",
+    "pt-BR": "Runa do Acúmulo",
+    "es-ES": "Runa del Acopio",
+    "fr-FR": "Rune d'Accumulation",
+    "de-DE": "Hortrune",
+    "ja-JP": "蓄積のルーン",
+    "ko-KR": "비축의 룬",
+    "zh-Hans": "储藏符文",
+    "zh-Hant": "儲藏符文",
+    "ru-RU": "Руна накопления",
+    "pl-PL": "Runa Gromadzenia",
+    "tr-TR": "Biriktirme Runu",
+    "uk-UA": "Руна накопичення",
+    "id-ID": "Rune Penimbunan",
+    "th-TH": "รูนกักตุน",
+    "vi-VN": "Rune Tích Trữ"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 1000000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 1200000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 1400000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "4": {
+     "cost": 1600000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "5": {
+     "cost": 1800000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    }
+   }
+  },
+  "180301": {
+   "max": 5,
+   "ldk": 180301,
+   "name": {
+    "en-US": "Rune of Training",
+    "pt-BR": "Runa de Treinamento",
+    "es-ES": "Runa de Entrenamiento",
+    "fr-FR": "Rune d'Entraînement",
+    "de-DE": "Trainingsrune",
+    "ja-JP": "修練のルーン",
+    "ko-KR": "수련의 룬",
+    "zh-Hans": "训练符文",
+    "zh-Hant": "訓練符文",
+    "ru-RU": "Руна тренировки",
+    "pl-PL": "Runa Treningu",
+    "tr-TR": "Eğitim Runu",
+    "uk-UA": "Руна тренування",
+    "id-ID": "Rune Latihan",
+    "th-TH": "รูนฝึกฝน",
+    "vi-VN": "Rune Tu Luyện"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 1000000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 1200000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 1400000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "4": {
+     "cost": 1600000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "5": {
+     "cost": 1800000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    }
+   }
+  },
+  "180401": {
+   "max": 5,
+   "ldk": 180401,
+   "name": {
+    "en-US": "Rune of Hoarding",
+    "pt-BR": "Runa do Acúmulo",
+    "es-ES": "Runa del Acopio",
+    "fr-FR": "Rune d'Accumulation",
+    "de-DE": "Hortrune",
+    "ja-JP": "蓄積のルーン",
+    "ko-KR": "비축의 룬",
+    "zh-Hans": "储藏符文",
+    "zh-Hant": "儲藏符文",
+    "ru-RU": "Руна накопления",
+    "pl-PL": "Runa Gromadzenia",
+    "tr-TR": "Biriktirme Runu",
+    "uk-UA": "Руна накопичення",
+    "id-ID": "Rune Penimbunan",
+    "th-TH": "รูนกักตุน",
+    "vi-VN": "Rune Tích Trữ"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 5000000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 5500000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 6000000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "4": {
+     "cost": 6500000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    },
+    "5": {
+     "cost": 7000000,
+     "costItem": 100001,
+     "st": "OfflineRewardGoldPercent",
+     "v": 100
+    }
+   }
+  },
+  "180501": {
+   "max": 5,
+   "ldk": 180501,
+   "name": {
+    "en-US": "Rune of Training",
+    "pt-BR": "Runa de Treinamento",
+    "es-ES": "Runa de Entrenamiento",
+    "fr-FR": "Rune d'Entraînement",
+    "de-DE": "Trainingsrune",
+    "ja-JP": "修練のルーン",
+    "ko-KR": "수련의 룬",
+    "zh-Hans": "训练符文",
+    "zh-Hant": "訓練符文",
+    "ru-RU": "Руна тренировки",
+    "pl-PL": "Runa Treningu",
+    "tr-TR": "Eğitim Runu",
+    "uk-UA": "Руна тренування",
+    "id-ID": "Rune Latihan",
+    "th-TH": "รูนฝึกฝน",
+    "vi-VN": "Rune Tu Luyện"
+   },
+   "prevReq": null,
+   "levels": {
+    "1": {
+     "cost": 5000000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "2": {
+     "cost": 5500000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "3": {
+     "cost": 6000000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "4": {
+     "cost": 6500000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    },
+    "5": {
+     "cost": 7000000,
+     "costItem": 100001,
+     "st": "OfflineRewardExpPercent",
+     "v": 100
+    }
+   }
+  }
+ }
+}
