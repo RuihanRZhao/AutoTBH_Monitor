@@ -4,6 +4,7 @@ const { get } = useApi()
 
 const rank = ref<any>(null)
 const idle = ref<any>(null)
+const goal = ref<any>(null)
 const loading = ref(true)
 const err = ref<string | null>(null)
 
@@ -11,11 +12,12 @@ async function load() {
   loading.value = true
   err.value = null
   try {
-    // Idle is a secondary panel — don't let its failure blank the whole page.
-    const [r, i] = await Promise.allSettled([get('/api/farm-rank'), get('/api/idle')])
+    // Idle and goal are secondary panels — don't let their failure blank the whole page.
+    const [r, i, g] = await Promise.allSettled([get('/api/farm-rank'), get('/api/idle'), get('/api/goal')])
     if (r.status === 'fulfilled') rank.value = r.value
     else { err.value = String(r.reason?.message || r.reason); rank.value = null }
     idle.value = i.status === 'fulfilled' ? i.value : null
+    goal.value = g.status === 'fulfilled' ? g.value : null
   } catch (e: any) {
     err.value = String(e?.message || e)
     rank.value = null
@@ -87,6 +89,23 @@ function fmtSec(s: any) {
         {{ t('farm.idleLocked') }}
       </p>
 
+      <!-- Push readiness (survivability retention only; see note) -->
+      <div v-if="goal?.ok" class="goal-box" :class="goal.rating">
+        <div class="goal-head">
+          <strong>{{ t('farm.pushTitle') }}</strong>
+          <span class="tag" :class="goal.rating">{{ t('farm.rating_' + goal.rating) }}</span>
+        </div>
+        <div class="goal-line">
+          {{ t('farm.pushTo', { stage: goal.target.label, lvl: goal.target.level }) }}
+          <span v-if="goal.levelGap > 0" class="muted">· {{ t('farm.levelGap', { n: Math.round(goal.levelGap) }) }}</span>
+        </div>
+        <div class="goal-line" style="font-size:13px">
+          {{ t('farm.retention', { pct: Math.round((goal.survivabilityRetention || 0) * 100) }) }}
+          <span class="muted">({{ num(goal.partyEhpAtCurrent) }} → {{ num(goal.partyEhpAtTarget) }} EHP)</span>
+        </div>
+        <p class="muted" style="font-size:11px; margin:6px 0 0">{{ t('farm.pushNote') }}</p>
+      </div>
+
       <h3>{{ t('farm.measured') }}</h3>
       <p class="muted" style="font-size:12px; margin:-4px 0 10px">{{ t('farm.measuredNote') }}</p>
       <table v-if="rank.measured.length">
@@ -157,4 +176,13 @@ h3 { margin: 0 0 4px; }
 .idle-grid .v { font-size: 15px; font-weight: 600; }
 .idle-bar { height: 4px; background: var(--border, #333); border-radius: 2px; margin-top: 10px; overflow: hidden; }
 .idle-fill { height: 100%; background: var(--good); }
+.goal-box { border: 1px solid var(--border, #333); border-left-width: 3px; border-radius: 6px; padding: 10px 12px; margin: 0 0 16px; }
+.goal-box.comfortable { border-left-color: var(--good); }
+.goal-box.tight { border-left-color: var(--warn); }
+.goal-box.risky { border-left-color: var(--bad, #d66); }
+.goal-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.goal-line { font-size: 14px; }
+.tag.comfortable { border-color: var(--good); color: var(--good); }
+.tag.tight { border-color: var(--warn); color: var(--warn); }
+.tag.risky { border-color: var(--bad, #d66); color: var(--bad, #d66); }
 </style>
