@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/gear-lines", get(h_gear_lines))
         .route("/api/debug/iteminfo", get(h_debug_iteminfo))
         .route("/api/debug/findrecord", get(h_debug_findrecord))
+        .route("/api/debug/gearrecord", get(h_debug_gearrecord))
         .route("/api/debug/modifiers", get(h_debug_modifiers))
         .route("/api/debug/monsterhp", get(h_debug_monsterhp))
         .route("/api/debug/classscan", get(h_debug_classscan))
@@ -801,6 +802,17 @@ async fn h_debug_findrecord(State(s): State<AppState>, Query(q): Query<Q>) -> im
     let window: usize = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(32);
     match s.meter.find_record_with(key, expect, window.min(128)) {
         Ok(v) => Json(v),
+        Err(e) => Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+/// Raw gear-stat-table record for one ItemKey: `[key, base1, base2, s1,m1,v1, s2,m2,v2]`.
+async fn h_debug_gearrecord(State(s): State<AppState>, Query(q): Query<Q>) -> impl IntoResponse {
+    let key: i64 = match q.get("key").and_then(|v| v.parse().ok()) {
+        Some(k) => k, None => return Json(json!({ "ok": false, "error": "missing ?key=" })),
+    };
+    match s.meter.read_gear_stat_table() {
+        Ok(t) => Json(json!({ "ok": true, "key": key, "record": t.get(&key) })),
         Err(e) => Json(json!({ "ok": false, "error": e })),
     }
 }
