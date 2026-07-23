@@ -482,3 +482,123 @@ pub fn forecast(gold_now: i64, gold_per_sec: f64, idle: &Value) -> Value {
         "gold100kSec": gold100k_sec,
     })
 }
+
+/// Highest hero level among the fielded party (falls back to the overall max if the arranged
+/// list is empty — e.g. between stages).
+pub fn max_party_level(psd: &Value) -> i64 {
+    let common = as_obj(&psd["commonSaveData"]);
+    let arranged: Vec<i64> = common.get("arrangedHeroKey").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).filter(|k| *k > 0).collect())
+        .unwrap_or_default();
+    let heroes = as_arr(&psd["heroSaveDatas"]);
+    let level_of = |h: &Value| i(h, "HeroLevel");
+    let fielded_max = heroes.iter()
+        .filter(|h| arranged.contains(&i(h, "heroKey")))
+        .map(level_of).max();
+    fielded_max.or_else(|| heroes.iter().map(level_of).max()).unwrap_or(0)
+}
+
+/// Look up a stage's `{level, label}` in the bundled stage table by key. The codex stores the
+/// human name under `name` and the position as `act`/`no` (not a ready-made `label`), so the
+/// label is built as `act-no` with the name appended when present.
+fn stage_meta(data_dir: &std::path::Path, key: i64) -> Option<(f64, String)> {
+    let txt = std::fs::read_to_string(data_dir.join("engine/codex.json")).ok()?;
+    let v: Value = serde_json::from_str(&txt).ok()?;
+    let s = v.get("stages")?.as_array()?.iter().find(|s| s.get("key").and_then(|k| k.as_i64()) == Some(key))?;
+    let lvl = s.get("level").and_then(|l| l.as_f64())?;
+    let (act, no) = (i(s, "act"), i(s, "no"));
+    let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let label = if name.is_empty() { format!("{act}-{no}") } else { format!("{act}-{no} {name}") };
+    Some((lvl, label))
+}
+
+/// Push-readiness for the next uncleared stage — how much of the party's survivability survives
+/// the jump to that stage's content level.
+///
+/// ## What this is, and deliberately is NOT
+///
+/// This answers "does pushing to the frontier gut my survivability?" using ONLY game-authoritative
+/// inputs: live hero stats (HP/armour/dodge from the running game) and the stage LEVEL (a reliable
+/// table index). Our EHP metric already scales armour mitigation against the content level, so
+/// recomputing party EHP at the target level vs the current level gives an honest *retention* ratio.
+///
+/// It is NOT an absolute "can you survive N monster hits" verdict. That needs monster attack, and
+/// the only monster-attack numbers available (codex/wiki `atk`) carry the SAME unverified ~10x
+/// inflation as the stage-HP table (the Slime reads `life` 50 in the codex against a measured ~5.6
+/// per-monster HP live). Feeding that into a danger model would produce confidently-wrong verdicts,
+/// so absolute danger is omitted until monster attack is read from memory and its scale verified —
+/// the same bar every other numeric parameter in this project is held to.
+///
+/// Target selection: stage keys encode `tier*1000 + act*100 + stageNo`, so ascending key order IS
+/// progression order; the push target is the smallest key greater than `maxCompletedStage`.
+pub fn push_goal(data_dir: &std::path::Path, meter: &crate::meter::Meter, psd: &Value) -> Value {
+    let common = as_obj(&psd["commonSaveData"]);
+    let max_completed = common.get("maxCompletedStage").and_then(|v| v.as_i64()).unwrap_or(0);
+    let cur_key = common.get("currentStageKey").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Smallest stage key strictly greater than the highest completed — the natural next push.
+    let target_key = std::fs::read_to_string(data_dir.join("engine/codex.json")).ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("stages").and_then(|s| s.as_array()).map(|a| {
+            a.iter().filter_map(|s| s.get("key").and_then(|k| k.as_i64()))
+                .filter(|k| *k > max_completed).min()
+        }))
+        .flatten();
+
+    let Some(target_key) = target_key else {
+        return json!({ "ok": false, "reason": "no stage above maxCompletedStage — already at the end of the table" });
+    };
+    let Some((target_lvl, target_label)) = stage_meta(data_dir, target_key) else {
+        return json!({ "ok": false, "reason": "target stage missing from the stage table" });
+    };
+    let cur_lvl = stage_meta(data_dir, cur_key).map(|(l, _)| l).unwrap_or(target_lvl);
+
+    // Party EHP at a given content level, from the LIVE game (weakest link, matching how party EHP
+    // is defined everywhere else in this file). Empty when the game isn't running.
+    let p = crate::engine::Params::default();
+    let list = match meter.read_party_stats() { Ok(l) => l, Err(_) => Vec::new() };
+    if list.is_empty() {
+        return json!({
+            "ok": false, "needsGame": true,
+            "target": { "stageKey": target_key, "label": target_label, "level": target_lvl },
+            "reason": "push readiness needs the game running — the save carries no resolved stats",
+        });
+    }
+    let party_ehp_at = |level: f64| -> Option<f64> {
+        let mut min_ehp = f64::INFINITY;
+        for h in &list {
+            let raw = h.get("stats").and_then(|v| v.as_object())?;
+            let get = |id: i64| raw.get(&id.to_string()).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let dodge = get(16) * crate::engine::game_to_display_scale(16).unwrap_or(1000.0);
+            let ehp = crate::engine::ehp_from_stats(get(5), get(6), level, dodge, &p);
+            if ehp < min_ehp { min_ehp = ehp; }
+        }
+        min_ehp.is_finite().then_some(min_ehp)
+    };
+
+    let ehp_target = party_ehp_at(target_lvl);
+    let ehp_current = party_ehp_at(cur_lvl.max(1.0));
+    let retention = match (ehp_target, ehp_current) {
+        (Some(t), Some(c)) if c > 0.0 => Some(t / c),
+        _ => None,
+    };
+    let party_level = crate::insights::max_party_level(psd);
+    let rating = retention.map(|r| if r >= 0.7 { "comfortable" } else if r >= 0.4 { "tight" } else { "risky" });
+
+    json!({
+        "ok": true,
+        "target": { "stageKey": target_key, "label": target_label, "level": target_lvl },
+        "current": { "stageKey": cur_key, "level": cur_lvl },
+        "partyMaxLevel": party_level,
+        "levelGap": (target_lvl - party_level as f64).max(0.0),
+        "partyEhpAtTarget": ehp_target,
+        "partyEhpAtCurrent": ehp_current,
+        "survivabilityRetention": retention,
+        "rating": rating,
+        "metric": "survivability-retention",
+        "note": "Relative EHP retention from armour-mitigation scaling only, from live hero stats. \
+                 NOT an absolute survival verdict — monster attack is not modelled (the only \
+                 available monster-attack data is wiki/codex, which carries the same unverified \
+                 ~10x inflation as the stage-HP table).",
+    })
+}

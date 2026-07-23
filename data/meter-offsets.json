@@ -314,14 +314,14 @@
     "TOTAL_SUBKEY": 0
   },
   "tuning": {
-    "sample_hz": 10.0,
-    "snapshot_interval_sec": 1.0,
-    "dps_window_sec": 5.0,
-    "kpm_window_sec": 60.0,
+    "sample_hz": 10,
+    "snapshot_interval_sec": 1,
+    "dps_window_sec": 5,
+    "kpm_window_sec": 60,
     "monster_scan_cap": 600,
     "log_scan_cap": 300,
-    "pending_close_grace_sec": 3.0,
-    "stage_adopt_grace_sec": 3.0,
+    "pending_close_grace_sec": 3,
+    "stage_adopt_grace_sec": 3,
     "trailing_box_tiers": [
       1,
       2
@@ -378,6 +378,29 @@
         "ItemInfoData": 3390,
         "StageInfoData": 3452
       }
+    },
+    "1.01.02-0x6a61cbab-0x697e000": {
+      "anchor_rva": 102001488,
+      "anchor_rva_hex": "0x6146B50",
+      "idx_aggregate_manager": 2830,
+      "indices": {
+        "StageManager": 2652,
+        "CommonSaveData": 2676,
+        "PlayerSaveData": 2680,
+        "GetBoxLog": 2990,
+        "HeroDieLog": 2991,
+        "LogManager": 2999,
+        "ResurrectionLog": 3005,
+        "StageClearLog": 3006,
+        "StageFailedLog": 3007,
+        "CurrencySaveData": 3086,
+        "HeroSaveData": 3087,
+        "MonsterSpawnManager": 3102,
+        "HeroInfoData": 3384,
+        "ItemInfoData": 3393,
+        "StageInfoData": 3455
+      },
+      "_comment": "Extracted from the original app resolve_cache.json for game build 1.01.02, same method as 1.00.28. idx_ut = AggregateManager index (idx_aggregate_manager)."
     }
   },
   "pe": {

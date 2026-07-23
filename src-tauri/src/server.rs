@@ -90,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/farm-rank", get(h_farm_rank))
         .route("/api/xp-forecast", get(h_xp_forecast))
         .route("/api/idle", get(h_idle))
+        .route("/api/goal", get(h_goal))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -405,6 +406,21 @@ async fn h_idle(State(s): State<AppState>) -> impl IntoResponse {
     let gold_now = insights::current_gold(&psd);
     let fc = insights::forecast(gold_now, gold_per_sec, &idle);
     Json(json!({ "ok": true, "idle": idle, "forecast": fc, "elapsedSec": elapsed_sec, "goldNow": gold_now }))
+}
+
+/// Push-readiness for the next uncleared stage: how much of the party's survivability survives the
+/// jump to that stage's content level. See `insights::push_goal` for why this is a relative EHP
+/// retention signal and NOT an absolute survival verdict.
+async fn h_goal(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    Json(insights::push_goal(&s.data_dir, &s.meter, &psd))
 }
 
 async fn h_runs(State(s): State<AppState>) -> impl IntoResponse {
