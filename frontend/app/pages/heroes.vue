@@ -4,15 +4,25 @@ const { get } = useApi()
 
 const ins = ref<any>(null)
 const xp = ref<any>(null)
+const sources = ref<any>(null)
 const loading = ref(true)
 const s = computed(() => ins.value?.insights || null)
 const meta = computed(() => s.value?.meta || null)
 const liveOff = computed(() => meta.value?.combatSource && meta.value.combatSource !== 'live game memory')
 
+// Key stats to show the source breakdown for, in display order.
+const SRC_STATS = ['AttackDamage', 'MaxHp', 'Armor', 'AttackSpeed']
+const srcByHero = computed(() => {
+  const m: Record<string, any> = {}
+  for (const h of sources.value?.heroes || []) m[h.heroKey] = h.stats
+  return m
+})
+
 async function load() {
   loading.value = true
   try { ins.value = await get('/api/insights') } catch { ins.value = null }
   try { xp.value = await get('/api/xp-forecast') } catch { xp.value = null }
+  try { sources.value = await get('/api/stat-sources') } catch { sources.value = null }
   loading.value = false
 }
 function fmtEta(sec: any) {
@@ -131,6 +141,34 @@ onMounted(load)
       <p v-if="s.engine?.pending" class="muted" style="margin-top:10px; font-size:12px">
         {{ t('overview.enginePending') }}: {{ s.engine.missing.join(', ') }}
       </p>
+
+      <!-- Stat source breakdown (live modifier manager, game-authoritative) -->
+      <template v-if="sources?.heroes?.length">
+        <h3 style="margin:20px 0 4px">{{ t('heroes.statSources') }}</h3>
+        <p class="muted" style="font-size:12px; margin:0 0 8px">{{ t('heroes.statSourcesNote') }}</p>
+        <table>
+          <thead>
+            <tr>
+              <th>{{ t('heroes.hero') }}</th><th>{{ t('upgrades.stat') }}</th><th style="text-align:right">{{ t('common.total') }}</th>
+              <th style="text-align:right">base</th><th style="text-align:right">gear</th>
+              <th style="text-align:right">passive</th><th style="text-align:right">account</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="h in sources.heroes" :key="h.heroKey">
+              <tr v-for="stat in SRC_STATS.filter((st:string) => h.stats[st])" :key="h.heroKey + stat">
+                <td class="muted">{{ stat === SRC_STATS.find((st:string) => h.stats[st]) ? 'Hero ' + h.heroKey : '' }}</td>
+                <td>{{ stat }}</td>
+                <td style="text-align:right; font-weight:600">{{ num(h.stats[stat].total, 2) }}</td>
+                <td style="text-align:right" class="muted">{{ h.stats[stat].bySource.base ? '+' + num(h.stats[stat].bySource.base.marginal, 1) : '—' }}</td>
+                <td style="text-align:right">{{ h.stats[stat].bySource.item ? '+' + num(h.stats[stat].bySource.item.marginal, 1) : '—' }}</td>
+                <td style="text-align:right" class="muted">{{ h.stats[stat].bySource.passive ? '+' + num(h.stats[stat].bySource.passive.marginal, 1) : '—' }}</td>
+                <td style="text-align:right" class="muted">{{ h.stats[stat].bySource.account ? '+' + num(h.stats[stat].bySource.account.marginal, 1) : '—' }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
 
       <template v-if="xp?.ok && xp.heroes?.length">
         <h3 style="margin:20px 0 8px">{{ t('heroes.xpForecast') }}</h3>

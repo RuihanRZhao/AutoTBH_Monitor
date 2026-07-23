@@ -42,6 +42,8 @@ export default defineI18nConfig(() => ({
         xpForecast: 'XP forecast',
         xpForecastNote: 'ETA uses your measured exp/sec from the farm-rank page — a real recorded rate, not a projection.',
         xpForecastNoRate: 'No recorded clears yet, so no exp/sec to project from — showing XP needed only.',
+        statSources: 'Where your stats come from',
+        statSourcesNote: 'Marginal contribution of each source, read live from the game modifier manager. Attribute allocations count within "passive".',
       },
       upgrades: {
         slot: 'Slot', best: 'Best swap', candidates: 'Options', stat: 'Stat',
