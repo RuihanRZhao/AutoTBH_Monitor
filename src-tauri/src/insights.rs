@@ -896,3 +896,91 @@ pub fn pet_advisor(psd: &Value, pets_table: &Value, codex: &Value) -> Value {
         "statSource": "wiki — not game-verified",
     })
 }
+
+/// Rune status advisor: owned level, next-level cost, affordability, and unlock state per rune.
+///
+/// Grounding: owned levels + gold are game-authoritative (save); costs, effects, max levels, and
+/// the unlock tree are wiki (`data/runes.json`). Deliberately does NOT compute a power-delta ROI:
+/// a rune's stat VALUE units are unverified against the game, and turning an unverified value into
+/// a confident "+X power per gold" is exactly the kind of laundering this project avoids. It shows
+/// what each rune grants (stat + raw value) and what you can afford, and leaves the power judgement
+/// to the player until the rune value scale is anchored to a live modifier read.
+pub fn rune_status(psd: &Value, runes_table: &Value, gold: i64) -> Value {
+    let defs = match runes_table.get("runes").and_then(|v| v.as_object()) {
+        Some(d) => d, None => return json!({ "ok": false, "error": "runes.json missing runes" }),
+    };
+    let levels = runes_table.get("runeLevels");
+    let edges = runes_table.get("tree").and_then(|t| t.get("edges")).and_then(|v| v.as_array());
+    let starts: std::collections::HashSet<i64> = runes_table.get("tree")
+        .and_then(|t| t.get("starts")).and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
+
+    // parent map from tree edges: parent[to] = from
+    let mut parent: HashMap<i64, i64> = HashMap::new();
+    for e in edges.map(|a| a.as_slice()).unwrap_or(&[]) {
+        if let Some(a) = e.as_array() {
+            if let (Some(from), Some(to)) = (a.first().and_then(|v| v.as_i64()), a.get(1).and_then(|v| v.as_i64())) {
+                parent.insert(to, from);
+            }
+        }
+    }
+
+    let owned: HashMap<i64, i64> = as_arr(&psd["RuneSaveData"]).iter()
+        .map(|r| (i(r, "RuneKey"), i(r, "Level"))).collect();
+    let owned_level = |k: i64| owned.get(&k).copied().unwrap_or(0);
+    let req_of = |k: i64| defs.get(&k.to_string()).and_then(|d| d.get("prevReq")).and_then(|v| v.as_i64()).unwrap_or(1);
+    let unlocked = |k: i64| -> bool {
+        if starts.contains(&k) || !parent.contains_key(&k) { return true; }
+        owned_level(parent[&k]) >= req_of(k)
+    };
+
+    let is_combat = |st: &str| st.starts_with("AllHero");
+    let mut affordable_next = Vec::new();
+    let (mut total_levels, mut maxed, mut owned_count) = (0i64, 0i64, 0i64);
+
+    for (key_s, d) in defs {
+        let key: i64 = match key_s.parse() { Ok(k) => k, Err(_) => continue };
+        let lv = owned_level(key);
+        let max = d.get("max").and_then(|v| v.as_i64()).unwrap_or(0);
+        if lv > 0 { owned_count += 1; total_levels += lv; }
+        if max > 0 && lv >= max { maxed += 1; }
+        if lv >= max || max == 0 { continue; }
+        if lv == 0 && !unlocked(key) { continue; } // can't start a locked rune
+        let ldk = d.get("ldk").and_then(|v| v.as_i64()).unwrap_or(key);
+        let next_row = levels.and_then(|l| l.get(ldk.to_string())).and_then(|t| t.get((lv + 1).to_string()));
+        let Some(row) = next_row else { continue };
+        let cost = row.get("cost").and_then(|v| v.as_i64()).unwrap_or(0);
+        let cost_item = row.get("costItem").and_then(|v| v.as_i64()).unwrap_or(0);
+        let st = row.get("st").and_then(|v| v.as_str()).unwrap_or("");
+        // Only gold-cost upgrades (costItem 100001) get an affordability verdict; others need mats.
+        let gold_cost = cost_item == 100001;
+        affordable_next.push(json!({
+            "runeKey": key,
+            "name": d.get("name").cloned().unwrap_or(Value::Null),
+            "level": lv, "nextLevel": lv + 1, "max": max,
+            "cost": cost, "costItem": cost_item, "goldCost": gold_cost,
+            "affordable": gold_cost && cost <= gold,
+            "stat": st, "value": row.get("v").cloned().unwrap_or(Value::Null),
+            "combat": is_combat(st),
+            "isNew": lv == 0,
+        }));
+    }
+
+    // Cheapest affordable gold upgrades first — the actionable list.
+    affordable_next.sort_by(|a, b| {
+        let (aa, ba) = (a["affordable"].as_bool().unwrap_or(false), b["affordable"].as_bool().unwrap_or(false));
+        ba.cmp(&aa).then(a["cost"].as_i64().unwrap_or(i64::MAX).cmp(&b["cost"].as_i64().unwrap_or(i64::MAX)))
+    });
+    let affordable_count = affordable_next.iter().filter(|r| r["affordable"].as_bool() == Some(true)).count();
+
+    json!({
+        "ok": true,
+        "gold": gold,
+        "ownedRunes": owned_count, "totalLevels": total_levels, "maxed": maxed, "total": defs.len(),
+        "affordableCount": affordable_count,
+        "upgrades": affordable_next,
+        "note": "Costs/effects are wiki data. No power-delta ROI is shown: rune value units are not \
+                 yet verified against the game, so ranking by 'power per gold' would be a guess. \
+                 Cheapest affordable upgrades are listed first; combat runes are flagged.",
+    })
+}

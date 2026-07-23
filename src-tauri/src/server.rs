@@ -94,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/crafting-plan", get(h_crafting_plan))
         .route("/api/stat-sources", get(h_stat_sources))
         .route("/api/pets", get(h_pets))
+        .route("/api/rune-status", get(h_rune_status))
         .route("/api/runs", get(h_runs))
         .route("/api/runs/reset", post(h_runs_reset))
         .route("/api/insights", get(h_insights))
@@ -478,6 +479,24 @@ async fn h_stat_sources(State(s): State<AppState>) -> impl IntoResponse {
         Ok(m) => Json(insights::stat_sources(&m)),
         Err(e) => Json(json!({ "ok": false, "needsGame": true, "error": e })),
     }
+}
+
+/// Rune status: owned level, next-level cost, affordability, unlock state per rune.
+async fn h_rune_status(State(s): State<AppState>) -> impl IntoResponse {
+    let raw = match save::player_save_data_string() {
+        Ok(r) => r,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let psd: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return Json(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let runes = match read_bundled(&s, "runes.json") {
+        Some(r) => r,
+        None => return Json(json!({ "ok": false, "error": "data/runes.json missing" })),
+    };
+    let gold = insights::current_gold(&psd);
+    Json(insights::rune_status(&psd, &runes, gold))
 }
 
 /// Pet advisor: owned/active pets, best owned pet per reward stat, next unlock requirement.
