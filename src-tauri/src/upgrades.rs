@@ -275,16 +275,18 @@ fn simulate(
 pub fn build(gear: &Value, modifiers: &[Value], stash: &Value, stage_level: f64) -> Value {
     let ids = stat_id_by_name();
     let recon = reconcile(gear, modifiers);
-    // Refuse to emit deltas built on buckets that do not balance — see the module note.
-    if recon["ok"].as_bool() != Some(true) {
-        return json!({
-            "ok": false,
-            "reason": "gear lines do not reconcile with the game's ITEM modifiers; \
-                       swap deltas would be computed by subtracting the wrong amount",
-            "reconciliation": recon,
-            "heroes": [],
-        });
-    }
+    // Per-hero gate, not all-or-nothing: a single hero whose gear lines don't reconcile must not
+    // suppress swap advice for the others. Heroes that don't balance are marked `blocked` with
+    // the offending stats; heroes that do get full deltas. (An earlier version bailed the whole
+    // response on any mismatch, so swapping in one hero with unmapped gear silently killed the
+    // feature for the entire party.)
+    let blocked: HashMap<i64, Value> = recon.get("heroes").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|h| {
+            let key = h.get("heroKey")?.as_i64()?;
+            let bad = h.get("mismatched")?.as_array()?;
+            (!bad.is_empty()).then(|| (key, json!(bad)))
+        }).collect())
+        .unwrap_or_default();
 
     let mods_by_hero: HashMap<i64, &Value> = modifiers
         .iter()
@@ -305,6 +307,23 @@ pub fn build(gear: &Value, modifiers: &[Value], stash: &Value, stage_level: f64)
         let Some(stats) = mods_by_hero.get(&hero_key) else { continue };
         let base = all_buckets(stats);
         let (base_dps, base_ehp, base_power) = score(&resolve(&base), stage_level);
+
+        // This hero's gear didn't reconcile — report its current stats but no swap deltas, since
+        // subtracting lines we can't account for would remove the wrong amount.
+        if let Some(bad) = blocked.get(&hero_key) {
+            let mut cur_stats = Map::new();
+            for (k, v) in resolve(&base) {
+                if let Some(sc) = ids.get(&k).and_then(|id| engine::game_to_display_scale(*id)) {
+                    cur_stats.insert(k, json!(v * sc));
+                }
+            }
+            heroes.push(json!({
+                "heroKey": hero_key, "blocked": true, "mismatched": bad,
+                "dps": base_dps, "ehp": base_ehp, "power": base_power,
+                "stats": cur_stats, "slots": [],
+            }));
+            continue;
+        }
 
         let mut slots = Vec::new();
         for s in h.get("slots").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
@@ -370,6 +389,7 @@ pub fn build(gear: &Value, modifiers: &[Value], stash: &Value, stage_level: f64)
         "ok": true,
         "stageLevel": stage_level,
         "candidateSource": "stash",
+        "blockedHeroes": blocked.keys().collect::<Vec<_>>(),
         "reconciliation": recon,
         "heroes": heroes,
     })

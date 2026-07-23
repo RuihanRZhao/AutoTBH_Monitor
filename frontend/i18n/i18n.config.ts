@@ -55,6 +55,7 @@ export default defineI18nConfig(() => ({
         ignoredHint: 'Lines excluded from this comparison',
         needGame: 'Swap simulation needs the game running — the modifier buckets only exist in the live process.',
         blocked: "Swap deltas withheld: our gear lines disagree with the game's own item modifiers, so subtracting them would remove the wrong amount.",
+        heroBlocked: "This hero's gear didn't reconcile, so no swap advice — mismatched stats",
       },
       farm: {
         measured: 'Measured', modelled: 'Modelled (unfarmed stages)',
@@ -148,6 +149,7 @@ export default defineI18nConfig(() => ({
         ignoredHint: '本次比较未计入的词条',
         needGame: '换装模拟需要游戏运行 —— 修饰符分桶只存在于运行中的进程里。',
         blocked: '已拒绝给出换装差值：我们解析的词条与游戏自己的装备修饰符对不上，减法会减错量。',
+        heroBlocked: '该英雄装备未对账通过，故不给换装建议 —— 不平的属性',
       },
       farm: {
         measured: '实测', modelled: '模型推算（未刷过的关卡）',

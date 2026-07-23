@@ -92,7 +92,15 @@ onMounted(load)
           </span>
         </h3>
 
-        <table>
+        <!-- This hero's gear didn't reconcile; show why, no swap deltas. -->
+        <div v-if="h.blocked" class="state" style="padding:8px 0">
+          <p class="muted" style="font-size:12px">
+            ⚠ {{ t('upgrades.heroBlocked') }}:
+            {{ (h.mismatched || []).map((m:any) => m.stat).join(', ') }}
+          </p>
+        </div>
+
+        <table v-else>
           <thead>
             <tr>
               <th>{{ t('upgrades.slot') }}</th>
